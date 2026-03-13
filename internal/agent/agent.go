@@ -107,7 +107,7 @@ func (a *Agent) GetNextPort() string {
 }
 
 func (a *Agent) createMicroservice(host string, port string, ms_type string) (*protocol.MsInfo, error) {
-	cmd := exec.Command("./tcp/cmd/microservice", "--port", port)
+	cmd := exec.Command("./tcp/cmd/microservice", "--port", port, "--type", ms_type)
 
 	err := cmd.Start()
 	if err != nil {
