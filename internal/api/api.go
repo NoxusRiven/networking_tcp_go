@@ -2,16 +2,16 @@ package api
 
 import (
 	"bufio"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net"
+	crypto "networking/tcp/internal/cryptography"
 	"networking/tcp/internal/protocol"
-	"sync"
 )
 
-//TODO: make logs for api to have info in terminal
+const (
+	CONNECTION_NUM = 4
+)
 
 // -------------------- STRUCTURES -----------------------
 
@@ -29,11 +29,13 @@ type APIGateway struct {
 
 // -------------------- FUNCTIONS -----------------------
 
-func NewAPIGateway(port int) (*APIGateway, error) {
+func NewAPIGateway(port uint32) (*APIGateway, error) {
 	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
 	if err != nil {
 		return nil, err
 	}
+
+	fmt.Println("API Gateway listining on [::]:", port)
 
 	return &APIGateway{
 		listener: ln,
@@ -50,13 +52,16 @@ func (api *APIGateway) Start(controllerAddr string) error {
 	api.requestChannel = make(chan controllerRequest)
 
 	// start worker
-	go controllerWorker(conn, api.requestChannel)
+	for i := 0; i < CONNECTION_NUM; i++ {
+		go controllerWorker(conn, api.requestChannel)
+	}
 
 	for {
 		client, err := api.listener.Accept()
 		if err != nil {
 			continue
 		}
+		fmt.Println("New Client accepted")
 		go api.handleClient(client)
 	}
 }
@@ -65,27 +70,23 @@ func controllerWorker(conn net.Conn, reqChan chan controllerRequest) {
 	reader := bufio.NewReader(conn)
 	writer := bufio.NewWriter(conn)
 
-	var mu sync.Mutex
-
 	for req := range reqChan {
-		go func(r controllerRequest) {
-			mu.Lock() // tylko jeden request na raz pisze/odczytuje po TCP
-			defer mu.Unlock()
 
-			// send request
-			reqBytes, _ := json.Marshal(r.data)
-			reqBytes = append(reqBytes, '\n')
-			writer.Write(reqBytes)
-			writer.Flush()
+		// send request
+		reqBytes, _ := json.Marshal(req.data)
+		reqBytes = append(reqBytes, '\n')
+		writer.Write(reqBytes)
+		writer.Flush()
+		fmt.Println("Request sent to Controller:", req.data)
 
-			// receive response
-			line, _ := reader.ReadBytes('\n')
-			var resp protocol.Message
-			json.Unmarshal(line, &resp)
+		// receive response
+		line, _ := reader.ReadBytes('\n')
+		var resp protocol.Message
+		json.Unmarshal(line, &resp)
 
-			// send to client
-			r.response <- resp
-		}(req)
+		// send to client
+		req.response <- resp
+		fmt.Println("Response from Controller:", resp)
 	}
 }
 
@@ -95,7 +96,7 @@ func (api *APIGateway) handleClient(client net.Conn) {
 	reader := bufio.NewReader(client)
 	writer := bufio.NewWriter(client)
 
-	sessionID := generateSessionID()
+	sessionID := crypto.GenerateID()
 
 	for {
 		line, err := reader.ReadBytes('\n')
@@ -111,7 +112,7 @@ func (api *APIGateway) handleClient(client net.Conn) {
 			continue
 		}
 
-		request.ID = sessionID
+		request.SessionID = sessionID
 
 		respChan := make(chan protocol.Message)
 
@@ -138,12 +139,6 @@ func (api *APIGateway) handleClient(client net.Conn) {
 		}
 		writer.Flush()
 	}
-}
-
-func generateSessionID() string {
-	b := make([]byte, 8)
-	rand.Read(b)
-	return hex.EncodeToString(b)
 }
 
 // -------------------- FUNCTIONS -----------------------
