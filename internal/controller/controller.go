@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 )
 
@@ -18,9 +19,11 @@ import (
 
  */
 
+// TODO: NOW!: make connection handler handle both connections, to controller and from controller, but make 2 instances of them, one from other to
+// TODO: NOW!: cleanup code a bit
 const (
-	REQUEST_PORT = "8888"
-	SYSTEM_PORT  = "9000"
+	REQUEST_PORT = ":8888"
+	SYSTEM_PORT  = ":9000"
 )
 
 const (
@@ -31,123 +34,117 @@ const (
 	HeartbeatCheckPeriod = 500 * time.Millisecond
 )
 
-type ClientType int
-
-const (
-	ClientUnknown ClientType = iota
-	ClientAPI
-	ClientAgent
-	ClientLB
-)
-
 // ------------------------------------ STRUCTURES ----------------------------------------
 
+// TODO: if agent is in the same host as controller he can choose ports otherwise controller sets boundry or just a free port and agents sends back wich port he got in remote host
 type Controller struct {
 	apiListener    net.Listener
 	systemListener net.Listener
 
-	agents        map[string]*protocol.AgentInfo
+	//? if controller will connect to more then 1 api make it same as agent storage
+	apiConn map[*protocol.Connection]struct{}
+
+	agentsInfo map[string]*protocol.AgentInfo
+	agentsConn map[string]*protocol.Connection
+
+	lbInfo map[string]*protocol.LBalancerInfo
+	lbConn map[string][]*protocol.Connection
+
 	microservices map[string][]*protocol.MsInfo
 
-	connManager *ConnectionManager
+	//TODO: store list of available hosts
 
 	mu sync.RWMutex
 
-	nextID        uint32 // id tracker of agent and load balancer
-	nextAgentPort uint32 // for assignAgentAddress (controller assigns host:port)
-}
-
-// ? might need to extract this later to sepatate file
-type Connection struct {
-	ID   string
-	Type ClientType
-
-	Conn net.Conn
-	RW   *bufio.ReadWriter
-
-	closeOnce sync.Once
-}
-
-type ConnectionManager struct {
-	api        map[string]*Connection
-	agents     map[string]*Connection
-	lBalancers map[string]*Connection
-
-	mu sync.RWMutex
+	nextID uint32 // id tracker of agent and load balancer
 }
 
 // ------------------------------------ STRUCTURES ----------------------------------------
 
 // ################################ CONNECTION FUNCTIONS ################################
 
-func (c *Connection) Close() {
-	c.closeOnce.Do(func() {
-		c.Conn.Close()
-	})
-}
+// Node id is unused for API
+func (c *Controller) Register(conn *protocol.Connection, connType protocol.ConnectionType, nodeID string) string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
-func NewConectionManager() *ConnectionManager {
-	return &ConnectionManager{
-		api:        make(map[string]*Connection),
-		agents:     make(map[string]*Connection),
-		lBalancers: make(map[string]*Connection),
-	}
-}
-
-func (cm *ConnectionManager) Register(conn *Connection) {
-	cm.mu.Lock()
-	defer cm.mu.Unlock()
-
+	//TODO: make it that nodes generate thier id and report back to controller wich id they have
 	conn.ID = crypto.GenerateID()
 
-	switch conn.Type {
-	case ClientAPI:
-		cm.api[conn.ID] = conn
-	case ClientAgent:
-		cm.agents[conn.ID] = conn
-	case ClientLB:
-		cm.lBalancers[conn.ID] = conn
+	switch connType {
+	case protocol.ConnAPI:
+		c.apiConn[conn] = struct{}{}
+	case protocol.ConnAgent:
+		c.agentsConn[nodeID] = conn
+	case protocol.ConnLB:
+		c.lbConn[nodeID] = append(c.lbConn[nodeID], conn)
 	}
+
+	return conn.ID
 }
 
-func (cm *ConnectionManager) Remove(conn *Connection) {
-	cm.mu.Lock()
-	defer cm.mu.Unlock()
+func (c *Controller) Remove(conn *protocol.Connection, connType protocol.ConnectionType) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
-	switch conn.Type {
-	case ClientAPI:
-		delete(cm.api, conn.ID)
+	switch connType {
+	case protocol.ConnAPI:
+		delete(c.apiConn, conn)
 
-	case ClientAgent:
-		delete(cm.agents, conn.ID)
+	case protocol.ConnAgent:
+		delete(c.agentsConn, conn.ID)
 
-	case ClientLB:
-		delete(cm.lBalancers, conn.ID)
+	case protocol.ConnLB:
+		//TODO: fix deleting one conn from lbconn
+		delete(c.lbConn, conn.ID)
+
 	}
 }
 
 // ? might make this a single function that takes 1 param and depending on that param switches between all manager containers
-func (cm *ConnectionManager) GetAgents() []*Connection {
+// ? param: (type ClientType) return (Conn map)
+func (c *Controller) GetAgents() []*protocol.Connection {
 	// cm.mu.Lock()
 	// defer cm.mu.Unlock()
-	out := make([]*Connection, 0, len(cm.agents))
-	for _, a := range cm.agents {
+	out := make([]*protocol.Connection, 0, len(c.agentsConn))
+	for _, a := range c.agentsConn {
 		out = append(out, a)
 	}
 
 	return out
 }
 
-func (cm *ConnectionManager) GetAgentByID(id string) *Connection {
-	cm.mu.Lock()
-	defer cm.mu.Unlock()
-	return cm.agents[id]
+// ? same as 'GetAgents' make 1 func and return based on param
+func (c *Controller) GetAgentByID(id string) *protocol.Connection {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.agentsConn[id]
+}
+
+func (c *Controller) GetAgentInfoByID(id string) *protocol.AgentInfo {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	for _, a := range c.agentsInfo {
+		if a.ID == id {
+			return a
+		}
+	}
+
+	panic("Agent info with id: " + id + " notfound")
+}
+
+func (c *Controller) KillAllAgents() {
+	for _, a := range c.agentsInfo {
+		if a == nil || a.Cmd == nil || a.Cmd.Process == nil {
+			return
+		}
+		a.Cmd.Process.Signal(syscall.SIGTERM)
+	}
 }
 
 // ################################ CONNECTION FUNCTIONS ################################
 
-// ---------------------------------- CORE FUNCTIONS --------------------------------------
-
+// ################################## CORE FUNCTIONS #####################################
 func NewController() (*Controller, error) {
 	apiListener, err := net.Listen("tcp", REQUEST_PORT)
 	if err != nil {
@@ -162,10 +159,18 @@ func NewController() (*Controller, error) {
 	return &Controller{
 		apiListener:    apiListener,
 		systemListener: systemListener,
-		agents:         make(map[string]*protocol.AgentInfo),
-		microservices:  make(map[string][]*protocol.MsInfo),
-		connManager:    NewConectionManager(),
-		nextID:         0,
+
+		apiConn: make(map[*protocol.Connection]struct{}),
+
+		agentsInfo: make(map[string]*protocol.AgentInfo),
+		agentsConn: make(map[string]*protocol.Connection),
+
+		lbInfo: make(map[string]*protocol.LBalancerInfo),
+		lbConn: make(map[string][]*protocol.Connection),
+
+		microservices: make(map[string][]*protocol.MsInfo),
+
+		nextID: 0,
 	}, nil
 }
 
@@ -173,12 +178,15 @@ func NewController() (*Controller, error) {
 func (c *Controller) Start() {
 	fmt.Println("Controller started")
 
+	fmt.Println("Almost starting api acc func")
 	go c.acceptAPI()
+	fmt.Println("After staring api acc func")
 	go c.acceptSystem()
-	go c.runHeartbeatChecker()
+	//go c.runHeartbeatChecker()
 }
 
 func (c *Controller) acceptAPI() {
+	fmt.Println("Started api acc func")
 	fmt.Println("Listening for API on", c.apiListener.Addr())
 
 	for {
@@ -210,19 +218,8 @@ func (c *Controller) acceptSystem() {
 	}
 }
 
-func (c *Controller) newConnection(nc net.Conn) *Connection {
-	return &Connection{
-		Conn: nc,
-		RW: bufio.NewReadWriter(
-			bufio.NewReader(nc),
-			bufio.NewWriter(nc),
-		),
-	}
-}
-
-// ? maybe destinguish conn and session id with prefix conn/sess-id
 func (c *Controller) handleAPIConn(nc net.Conn) {
-	conn := c.newConnection(nc)
+	conn := protocol.NewConnection(nc)
 	defer conn.Close()
 
 	msg, err := protocol.Receive(conn.RW.Reader)
@@ -231,18 +228,35 @@ func (c *Controller) handleAPIConn(nc net.Conn) {
 		return
 	}
 
+	//gotta receive just reg_api to sync request sending and receiving
+	var response protocol.Message
 	if msg.Type != protocol.REG_API {
-		fmt.Println("expected type REGISTER API")
+		errMsg := "expected type REGISTER API"
+		fmt.Println(errMsg)
+		response = protocol.Message{
+			Code:    protocol.ERROR,
+			Type:    msg.Type,
+			Content: errMsg,
+		}
+
+		protocol.Send(conn.RW.Writer, response)
+		//TODO: check if it will clean up conn if it fails
 		return
 	}
 
-	conn.Type = ClientAPI
-
-	// Register generates and sets conn ID
-	c.connManager.Register(conn)
-	defer c.connManager.Remove(conn)
+	c.Register(conn, protocol.ConnAPI, "")
+	defer c.Remove(conn, protocol.ConnAPI)
 
 	fmt.Println("API connected:", conn.ID)
+
+	response = protocol.Message{
+		SessionID:    msg.SessionID,
+		ConnectionID: msg.ConnectionID,
+		Code:         protocol.SUCCESS,
+		Type:         msg.Type,
+	}
+
+	protocol.Send(conn.RW.Writer, response)
 
 	for {
 		req, err := protocol.Receive(conn.RW.Reader)
@@ -259,9 +273,8 @@ func (c *Controller) handleAPIConn(nc net.Conn) {
 
 }
 
-// TODO: finish refactoring from here onward
 func (c *Controller) handleSystemConn(nc net.Conn) {
-	conn := c.newConnection(nc)
+	conn := protocol.NewConnection(nc)
 	defer conn.Close()
 
 	msg, err := protocol.Receive(conn.RW.Reader)
@@ -270,30 +283,35 @@ func (c *Controller) handleSystemConn(nc net.Conn) {
 		return
 	}
 
+	var connType protocol.ConnectionType
 	switch msg.Type {
 	case protocol.REG_AGENT:
-		conn.Type = ClientAgent
-		host, port := c.assignAgentAddress()
+		//TODO: this will be later used in register
+		//port := msg.Content
+		connType = protocol.ConnAgent
+		//agent have to provide thier id to be registered
+		id := msg.Content
 
-		c.connManager.Register(conn)
-		defer c.connManager.Remove(conn)
-		c.registerAgentMetadata(conn.ID, host, port)
-		defer c.unregisterAgentMetadata(conn.ID)
+		c.Register(conn, connType, id)
+		defer c.Remove(conn, connType)
+
+		//TODO: for now localhost change to assignet host from cotroller
+		// c.registerAgentMetadata(conn.ID, "localhost", port)
+		// defer c.unregisterAgentMetadata(conn.ID)
 
 		fmt.Print("Agent registered ")
 
 	case protocol.REG_LB:
-		conn.Type = ClientLB
 		fmt.Print("LoadBalancer registered ")
 	default:
 		fmt.Println("Unknown system client")
 		return
 	}
 
-	if conn.Type != ClientAgent {
-		c.connManager.Register(conn)
-		defer c.connManager.Remove(conn)
-	}
+	// if connType != protocol.ConnAPI {
+	// 	c.connManager.Register(conn, connType)
+	// 	defer c.connManager.Remove(conn, connType)
+	// }
 
 	fmt.Print(conn.ID)
 
@@ -306,17 +324,17 @@ func (c *Controller) handleSystemConn(nc net.Conn) {
 			return
 		}
 
-		switch conn.Type {
-		case ClientAgent:
+		switch connType {
+		case protocol.ConnAgent:
 			c.handleAgentMessage(conn, req)
-		case ClientLB:
+		case protocol.ConnLB:
 			c.handleLBMessage(conn, req)
 		}
 
 	}
 }
 
-func (c *Controller) handleAPIRequst(conn *Connection, msg protocol.Message) {
+func (c *Controller) handleAPIRequst(conn *protocol.Connection, msg protocol.Message) {
 	switch msg.Type {
 	case protocol.PING:
 
@@ -354,7 +372,7 @@ func (c *Controller) handleAPIRequst(conn *Connection, msg protocol.Message) {
 	}
 }
 
-func (c *Controller) handleAgentMessage(conn *Connection, msg protocol.Message) {
+func (c *Controller) handleAgentMessage(conn *protocol.Connection, msg protocol.Message) {
 	switch msg.Type {
 	case protocol.HEARTBEAT:
 		c.updateAgentHeartbeat(conn.ID)
@@ -365,7 +383,9 @@ func (c *Controller) handleAgentMessage(conn *Connection, msg protocol.Message) 
 	}
 }
 
-func (c *Controller) handleLBMessage(conn *Connection, msg protocol.Message) {
+func (c *Controller) handleLBMessage(conn *protocol.Connection, msg protocol.Message) {
+
+	fmt.Println(conn)
 
 	switch msg.Type {
 
@@ -374,17 +394,12 @@ func (c *Controller) handleLBMessage(conn *Connection, msg protocol.Message) {
 	}
 }
 
-// assignAgentAddress returns the next host:port the controller assigns to an agent.
-func (c *Controller) assignAgentAddress() (host, port string) {
-	n := atomic.AddUint32(&c.nextAgentPort, 1)
-	//TODO: later make it logicly choose host
-	return "localhost", fmt.Sprintf("%d", BASE_PORT_AGENT+uint16(n-1))
-}
-
 func (c *Controller) registerAgentMetadata(id, host, port string) {
+	//TODO: find metadata from map that u need to implement and then just update heart beat only if it doesnt exist create new one
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.agents[id] = &protocol.AgentInfo{
+	c.agentsInfo[id] = &protocol.AgentInfo{
 		ID:            id,
 		Host:          host,
 		Port:          port,
@@ -397,13 +412,13 @@ func (c *Controller) registerAgentMetadata(id, host, port string) {
 func (c *Controller) unregisterAgentMetadata(id string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	delete(c.agents, id)
+	delete(c.agentsInfo, id)
 }
 
 func (c *Controller) updateAgentHeartbeat(id string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if info, ok := c.agents[id]; ok {
+	if info, ok := c.agentsInfo[id]; ok {
 		info.Mu.Lock()
 		info.LastHeartbeat = time.Now()
 		info.Status = protocol.Healthy
@@ -411,41 +426,42 @@ func (c *Controller) updateAgentHeartbeat(id string) {
 	}
 }
 
-func (c *Controller) runHeartbeatChecker() {
-	ticker := time.NewTicker(HeartbeatCheckPeriod)
-	defer ticker.Stop()
+// ! not used function might have errors or isnt even needed
+// func (c *Controller) runHeartbeatChecker() {
+// 	ticker := time.NewTicker(HeartbeatCheckPeriod)
+// 	defer ticker.Stop()
 
-	for range ticker.C {
-		now := time.Now()
-		var stale []string
+// 	for range ticker.C {
+// 		now := time.Now()
+// 		var stale []string
 
-		c.mu.RLock()
-		for id, info := range c.agents {
-			//only check agents that are connected to controller
-			if info.Conn != nil {
-				continue
-			}
-			info.Mu.RLock()
-			last := info.LastHeartbeat
-			info.Mu.RUnlock()
-			if now.Sub(last) > HeartbeatTimeout {
-				stale = append(stale, id)
-			}
-		}
-		c.mu.RUnlock()
+// 		c.mu.RLock()
+// 		for id, info := range c.agentsInfo {
+// 			//only check agents that are connected to controller
+// 			//if info.Conn != nil {
+// 			continue
+// 			//}
+// 			info.Mu.RLock()
+// 			last := info.LastHeartbeat
+// 			info.Mu.RUnlock()
+// 			if now.Sub(last) > HeartbeatTimeout {
+// 				stale = append(stale, id)
+// 			}
+// 		}
+// 		c.mu.RUnlock()
 
-		for _, id := range stale {
-			c.onAgentTimeout(id)
-		}
-	}
-}
+// 		for _, id := range stale {
+// 			c.onAgentTimeout(id)
+// 		}
+// 	}
+// }
 
 // onAgentTimeout runs when an agent misses heartbeats for HeartbeatTimeout.
 // Triggers safety measures and deep checking.
 // ? when saving for example to db just skip unhealthy agents but keep thier metadata might be needed to restart them
 func (c *Controller) onAgentTimeout(agentID string) {
 	c.mu.Lock()
-	info, ok := c.agents[agentID]
+	info, ok := c.agentsInfo[agentID]
 	if !ok {
 		c.mu.Unlock()
 		return // already removed
@@ -457,10 +473,10 @@ func (c *Controller) onAgentTimeout(agentID string) {
 
 	fmt.Printf("[SAFETY] Agent %s heartbeat timeout — initiating safety measures\n", agentID)
 
-	conn := c.connManager.GetAgentByID(agentID)
+	conn := c.GetAgentByID(agentID)
 	if conn != nil {
 		conn.Close()
-		c.connManager.Remove(conn)
+		c.Remove(conn, protocol.ConnAgent)
 	}
 
 	// Deep checking / cleanup (expand as needed)
@@ -484,11 +500,12 @@ func (c *Controller) handleAgentDisconnect(agentID string) {
 	fmt.Println("Agent removed:", agentID)
 }
 
-// ---------------------------------- CORE FUNCTIONS --------------------------------------
+// ################################## CORE FUNCTIONS #####################################
 
 // #################################  API FUNCTIONS ################################
 
 // #################################  API FUNCTIONS ################################
+
 // ################################# AGENT FUNCTIONS ###############################
 
 func (c *Controller) GetNextAgentID() uint32 {
@@ -497,51 +514,67 @@ func (c *Controller) GetNextAgentID() uint32 {
 
 // createNewAgent spawns an agent process, assigns host:port, and registers it.
 // Agent binary must accept --host and --port flags (e.g. ./agent --host localhost --port 10001).
-func (c *Controller) createNewAgent() (*protocol.AgentInfo, error) {
-	host, port := c.assignAgentAddress()
+func (c *Controller) createNewAgent(port string) (*protocol.AgentInfo, error) {
 	id := fmt.Sprintf("%d", c.GetNextAgentID())
 
-	cmd := exec.Command("./tcp/cmd/agent", "--port", port)
+	cmd := exec.Command("../../cmd/agent/agent.exe", "--port", port)
+
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start agent process: %w", err)
 	}
 
+	fmt.Println("Started process: ", cmd.Process.Pid)
+
+	//TODO: later change hardcoded host, and port will be sent by agent
 	agent := &protocol.AgentInfo{
 		ID:            id,
-		Host:          host,
+		Host:          "localhost",
 		Port:          port,
 		Cmd:           cmd,
 		Microservices: make(map[string][]*protocol.MsInfo),
 	}
 
-	if err := connectToAgent(agent); err != nil {
+	conn, err := c.connectToAgent(agent)
+	if err != nil {
 		_ = cmd.Process.Kill()
 		return nil, fmt.Errorf("connect to agent: %w", err)
 	}
-	defer agent.Close()
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.agents[agent.ID] = agent
+	c.agentsInfo[conn.ID] = agent
 
-	fmt.Printf("Agent started {ID:%s PID:%d Port:%s}\n", id, cmd.Process.Pid, port)
+	fmt.Printf("Agent started {ID:%s PID:%d}\n", id, cmd.Process.Pid)
 	return agent, nil
 }
 
-func connectToAgent(agent *protocol.AgentInfo) error {
-	conn, err := net.DialTimeout("tcp", net.JoinHostPort(agent.Host, agent.Port), 5*time.Second)
-	if err != nil {
-		return err
+func (c *Controller) connectToAgent(agent *protocol.AgentInfo) (*protocol.Connection, error) {
+	address := net.JoinHostPort(agent.Host, agent.Port)
+
+	timeout := time.After(120 * time.Second)
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
+
+	var nc net.Conn
+	var err error
+	for {
+		select {
+		case <-timeout:
+			return nil, fmt.Errorf("timeout connecting to agent")
+
+		case <-ticker.C:
+			nc, err = net.DialTimeout("tcp", address, 500*time.Millisecond)
+			if err == nil {
+				fmt.Println("Connected to agent!")
+
+				conn := protocol.NewConnection(nc)
+				c.Register(conn, protocol.ConnAgent, agent.ID)
+
+				return conn, nil
+			}
+		}
+		fmt.Println("Attempt to connect to agent")
 	}
-
-	agent.Conn = conn
-
-	agent.RW = bufio.NewReadWriter(
-		bufio.NewReader(conn),
-		bufio.NewWriter(conn),
-	)
-
-	return nil
 }
 
 // ---------------------------------- AGENT FUNCTIONS --------------------------------------
@@ -573,58 +606,52 @@ func (c *Controller) createNewService(serviceType string) (*protocol.MsInfo, err
 
 	// Ensure at least one agent exists
 	c.mu.RLock()
-	hasAgent := len(c.agents) > 0
+	hasAgent := len(c.agentsInfo) > 0
 	c.mu.RUnlock()
+
+	var agent *protocol.AgentInfo
+	var err error
+
 	if !hasAgent {
-		if _, err := c.createNewAgent(); err != nil {
+		agent, err = c.createNewAgent("2000")
+		if err != nil {
 			return nil, err
 		}
+
 	}
 
 	// TODO: choose agent by load (least busy, etc.)
 	c.mu.RLock()
-	var agent *protocol.AgentInfo
-	for _, a := range c.agents {
-		agent = a
-		break
+	if hasAgent {
+		for _, a := range c.agentsInfo {
+			agent = a
+			break
+		}
 	}
 	c.mu.RUnlock()
 
 	if agent == nil {
-		return nil, fmt.Errorf("no agents available")
+		return nil, fmt.Errorf("no agents available: passed agent creation and iteration and still no agents were found")
 	}
 
 	// CREATE goes to agent's server port. Two paths:
 	// - Spawned: agent.Conn is controller→agent, use it
 	// - Agent-connected: agent.Conn is nil, controller DIALs agent.Host:agent.Port
 	//   (ConnectionManager conn is for heartbeats only; CREATE must not use it)
-	var writer *bufio.Writer
-	var reader *bufio.Reader
 
-	if agent.Conn != nil {
-		agent.Mu.Lock()
-		_ = agent.Conn.SetDeadline(time.Now().Add(10 * time.Second))
-		writer, reader = agent.RW.Writer, agent.RW.Reader
-		agent.Mu.Unlock()
-	} else {
-		conn, err := net.DialTimeout("tcp", net.JoinHostPort(agent.Host, agent.Port), 5*time.Second)
-		if err != nil {
-			return nil, fmt.Errorf("dial agent %s: %w", agent.ID, err)
-		}
-		defer conn.Close()
-		rw := bufio.NewReadWriter(bufio.NewReader(conn), bufio.NewWriter(conn))
-		writer, reader = rw.Writer, rw.Reader
-		if err := conn.SetDeadline(time.Now().Add(10 * time.Second)); err != nil {
-			return nil, err
-		}
+	// mapping agent info to agent conn
+	agentConn := c.agentsConn[agent.ID]
+
+	if agentConn == nil {
+		return nil, fmt.Errorf("Agents connection is nil")
 	}
 
 	request := protocol.Message{SessionID: agent.ID, Type: protocol.CREATE, Content: serviceType}
-	if err := protocol.Send(writer, request); err != nil {
+	if err := protocol.Send(agentConn.RW.Writer, request); err != nil {
 		return nil, fmt.Errorf("send CREATE: %w", err)
 	}
 
-	response, err := protocol.Receive(reader)
+	response, err := protocol.Receive(agentConn.RW.Reader)
 	if err != nil {
 		return nil, err
 	}

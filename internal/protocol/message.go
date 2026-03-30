@@ -25,7 +25,7 @@ const (
 	REG_AGENT MessageType = "REGISTER_AGENT"
 	REG_LB    MessageType = "REGISTER_LOADBALANCER"
 
-	// agent/loadbalancer
+	// system
 	CREATE    MessageType = "CREATE"
 	DESTROY   MessageType = "DESTROY"
 	RESET     MessageType = "RESET"

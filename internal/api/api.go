@@ -9,6 +9,11 @@ import (
 	"networking/tcp/internal/protocol"
 )
 
+/**
+*TODO: add register to controller
+*TODO: every controllerWorker should has its own connection (Dial func) and register
+ */
+
 const (
 	CONNECTION_NUM = 4
 )
@@ -44,16 +49,22 @@ func NewAPIGateway(port uint32) (*APIGateway, error) {
 
 func (api *APIGateway) Start(controllerAddr string) error {
 
-	conn, err := net.Dial("tcp", controllerAddr)
-	if err != nil {
-		return err
-	}
-
 	api.requestChannel = make(chan controllerRequest)
 
 	// start worker
 	for i := 0; i < CONNECTION_NUM; i++ {
-		go controllerWorker(conn, api.requestChannel)
+		conn, err := net.Dial("tcp", controllerAddr)
+		if err != nil {
+			fmt.Println("Error connecting to controller:", err)
+			continue
+		}
+
+		rw, err := registerConn(conn)
+		if err != nil {
+			continue
+		}
+
+		go controllerWorker(rw, api.requestChannel)
 	}
 
 	for {
@@ -66,23 +77,44 @@ func (api *APIGateway) Start(controllerAddr string) error {
 	}
 }
 
-func controllerWorker(conn net.Conn, reqChan chan controllerRequest) {
-	reader := bufio.NewReader(conn)
-	writer := bufio.NewWriter(conn)
+func registerConn(conn net.Conn) (*bufio.ReadWriter, error) {
+	r := bufio.NewReader(conn)
+	w := bufio.NewWriter(conn)
+
+	err := protocol.Send(w, protocol.Message{
+		Type: protocol.REG_API,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := protocol.Receive(r)
+	if err != nil {
+		return nil, err
+	}
+
+	if resp.Code != protocol.SUCCESS {
+		return nil, fmt.Errorf("Register conn err: %s", resp.Content)
+	}
+
+	return bufio.NewReadWriter(r, w), nil
+}
+
+// TODO: change this to use protocol Send/receive
+func controllerWorker(rw *bufio.ReadWriter, reqChan chan controllerRequest) {
 
 	for req := range reqChan {
 
 		// send request
-		reqBytes, _ := json.Marshal(req.data)
-		reqBytes = append(reqBytes, '\n')
-		writer.Write(reqBytes)
-		writer.Flush()
+		protocol.Send(rw.Writer, req.data)
 		fmt.Println("Request sent to Controller:", req.data)
 
 		// receive response
-		line, _ := reader.ReadBytes('\n')
-		var resp protocol.Message
-		json.Unmarshal(line, &resp)
+		resp, err := protocol.Receive(rw.Reader)
+		if err != nil {
+			fmt.Println("controller worker:", err)
+			return
+		}
 
 		// send to client
 		req.response <- resp

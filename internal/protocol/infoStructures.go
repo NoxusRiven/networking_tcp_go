@@ -24,6 +24,35 @@ const (
 	Unknown
 )
 
+type ConnectionType int
+
+const (
+	ConnUnknown ConnectionType = iota
+	ConnAPI
+	ConnAgent
+	ConnLB
+)
+
+type ServiceType string
+
+const (
+	PingService     ServiceType = "PING"
+	UpladService    ServiceType = "FILE_UPLOAD"
+	DownloadService ServiceType = "FILE_DOWNLOAD"
+)
+
+// if connection has id it was registered
+type Connection struct {
+	ID string
+
+	Conn net.Conn
+	RW   *bufio.ReadWriter
+
+	mu sync.Mutex
+
+	closeOnce sync.Once
+}
+
 type AgentInfo struct {
 	ID   string
 	Host string
@@ -34,25 +63,26 @@ type AgentInfo struct {
 
 	Microservices map[string][]*MsInfo
 
-	Conn net.Conn
-	RW   *bufio.ReadWriter
-
 	Cmd *exec.Cmd
 
 	Mu sync.RWMutex // protects mutable fields
 }
 
 type MsInfo struct {
+	ID        string
 	Agent     AgentInfo
 	LBalancer LBalancerInfo
 
 	Host string
 	Port string
 
+	//TODO: later make this a serviceType not string
+	Type string
+
 	status NodeStatus
 
-	Conn net.Conn
-	RW   *bufio.ReadWriter
+	// Conn net.Conn
+	// RW   *bufio.ReadWriter
 
 	Cmd *exec.Cmd
 }
@@ -63,14 +93,25 @@ type LBalancerInfo struct {
 	Microservices map[string][]*MsInfo
 }
 
+func NewConnection(nc net.Conn) *Connection {
+	return &Connection{
+		Conn: nc,
+		RW: bufio.NewReadWriter(
+			bufio.NewReader(nc),
+			bufio.NewWriter(nc),
+		),
+	}
+}
+
+func (c *Connection) Close() {
+	c.closeOnce.Do(func() {
+		c.Conn.Close()
+	})
+}
+
 func (a *AgentInfo) Close() {
 	a.Mu.Lock()
 	defer a.Mu.Unlock()
-
-	if a.Conn != nil {
-		a.Conn.Close()
-		a.Conn = nil
-	}
 
 	if a.Cmd.Process != nil {
 		a.Cmd.Process.Kill()
@@ -79,10 +120,6 @@ func (a *AgentInfo) Close() {
 }
 
 func (ms *MsInfo) Close() {
-	if ms.Conn != nil {
-		ms.Conn.Close()
-		ms.Conn = nil
-	}
 
 	if ms.Cmd.Process != nil {
 		ms.Cmd.Process.Kill()
