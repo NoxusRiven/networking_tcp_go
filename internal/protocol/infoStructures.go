@@ -58,6 +58,8 @@ type AgentInfo struct {
 	Host string
 	Port string
 
+	//? maybe store info of LB in agent
+
 	LastHeartbeat time.Time
 	Status        NodeStatus
 
@@ -88,9 +90,20 @@ type MsInfo struct {
 }
 
 type LBalancerInfo struct {
-	Host          string
-	Port          string
+	ID   string
+	Host string
+	Port string
+
+	//? maybe store agent info
+
+	LastHeartbeat time.Time
+	Status        NodeStatus
+
 	Microservices map[string][]*MsInfo
+
+	Cmd *exec.Cmd
+
+	Mu sync.RWMutex // protects mutable fields
 }
 
 func NewConnection(nc net.Conn) *Connection {

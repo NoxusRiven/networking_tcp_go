@@ -24,9 +24,12 @@ func NewMicroservice(listenerPort string) (*Microservice, error) {
 }
 
 func (ms *Microservice) Start(serviceType string) {
+	fmt.Printf("[SERVICE]: service %s started", serviceType)
 	switch serviceType {
 	case "ping":
 		ms.acceptConnections(ms.pingService)
+	default:
+		fmt.Println("[SERVICE]: unknow service type", serviceType)
 	}
 }
 
@@ -34,7 +37,7 @@ func (ms *Microservice) acceptConnections(serviceFunc func(conn net.Conn)) {
 	for {
 		conn, err := ms.listener.Accept()
 		if err != nil {
-			fmt.Println("accepting connection error", err)
+			fmt.Println("[SERVICE]: accepting connection error", err)
 			return
 		}
 
@@ -49,7 +52,8 @@ func (ms *Microservice) pingService(conn net.Conn) {
 	for {
 		request, err := protocol.Receive(reader)
 		if err != nil {
-			fmt.Println("reading request error", err)
+			fmt.Println("[SERVICE]: reading request error", err)
+			return
 		}
 
 		fmt.Println(request)
@@ -66,7 +70,8 @@ func (ms *Microservice) pingService(conn net.Conn) {
 
 		err = protocol.Send(writer, response)
 		if err != nil {
-			fmt.Println("sending response error", err)
+			fmt.Println("[SERVICE]: sending response error", err)
+			return
 		}
 	}
 }

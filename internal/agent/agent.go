@@ -5,6 +5,7 @@ import (
 	"net"
 	crypto "networking/tcp/internal/cryptography"
 	"networking/tcp/internal/protocol"
+	"os"
 	"os/exec"
 	"sync"
 	"time"
@@ -15,7 +16,9 @@ const (
 )
 
 type Agent struct {
+	//key is service type
 	msInfo map[string][]*protocol.MsInfo
+	//key is ID
 	msConn map[string]*protocol.Connection
 
 	listener net.Listener
@@ -43,11 +46,11 @@ func NewAgent(lisPort string) (*Agent, error) {
 }
 
 func (a *Agent) Start() {
-	fmt.Println("Agent listening for Controller on", a.listener.Addr().String())
+	fmt.Println("[AGENT]: Agent listening for Controller on", a.listener.Addr().String())
 
 	conn, err := a.listener.Accept()
 	if err != nil {
-		fmt.Println("Accept error", err)
+		fmt.Println("[AGENT]: Accept error", err)
 		return
 	}
 
@@ -62,7 +65,7 @@ func (a *Agent) handleControllerConnection(nc net.Conn) {
 	for {
 		request, err := protocol.Receive(conn.RW.Reader)
 		if err != nil {
-			fmt.Println("Error while reading from controller", err)
+			fmt.Println("[AGENT]: Error while reading from controller", err)
 			return
 		}
 
@@ -101,7 +104,7 @@ func (a *Agent) handleControllerRequest(conn *protocol.Connection, request proto
 	}
 
 	if err := protocol.Send(conn.RW.Writer, response); err != nil {
-		fmt.Println("Error sending response:", err)
+		fmt.Println("[AGENT]: Error sending response:", err)
 		return
 	}
 }
@@ -114,12 +117,19 @@ func (a *Agent) GetNextPort() string {
 }
 
 func (a *Agent) createMicroservice(host string, port string, ms_type string) (*protocol.MsInfo, error) {
-	cmd := exec.Command("./tcp/cmd/microservice", "--port", port, "--type", ms_type)
+
+	//Correct exec Command
+	cmd := exec.Command("../../cmd/microservice/service.exe", "--port", port, "--type", ms_type)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
 
 	err := cmd.Start()
 	if err != nil {
-		return nil, fmt.Errorf("start ms process: %w", err)
+		fmt.Println("[AGENT]: Error while starting ms process", err)
+		return nil, fmt.Errorf("[AGENT]: error start ms process: %w", err)
 	}
+
+	fmt.Printf("[AGENT]: ms %s process started successfully! Pid: %d", ms_type, cmd.Process.Pid)
 
 	ms := &protocol.MsInfo{
 		Host: host,
@@ -153,6 +163,18 @@ func (a *Agent) connectToMicroservice(ms *protocol.MsInfo) error {
 	a.msConn[conn.ID] = conn
 
 	return nil
+}
+
+func (a *Agent) KillAllMS() {
+	for _, ms := range a.msInfo {
+		for _, m := range ms {
+			if m == nil || m.Cmd == nil || m.Cmd.Process == nil {
+				continue
+			}
+			m.Cmd.Process.Kill()
+		}
+
+	}
 }
 
 func healthCheck() error {
