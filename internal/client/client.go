@@ -88,7 +88,9 @@ func (c *CLI) HandlePing() {
 		return
 	}
 
-	fmt.Println("Server Response:", resp)
+	fmt.Println("[DEBUG]: Server Full Response:", resp)
+
+	fmt.Println("[SERVER]:", resp.Content)
 }
 
 func (c *CLI) HandleExit() {

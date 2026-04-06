@@ -13,6 +13,7 @@ type Microservice struct {
 }
 
 func NewMicroservice(listenerPort string) (*Microservice, error) {
+	fmt.Printf("Ms started listening on %s\n", listenerPort)
 	listen, err := net.Listen("tcp", listenerPort)
 	if err != nil {
 		return nil, err
@@ -24,7 +25,7 @@ func NewMicroservice(listenerPort string) (*Microservice, error) {
 }
 
 func (ms *Microservice) Start(serviceType string) {
-	fmt.Printf("[SERVICE]: service %s started", serviceType)
+	fmt.Printf("[SERVICE]: service %s started on\n", serviceType)
 	switch serviceType {
 	case "ping":
 		ms.acceptConnections(ms.pingService)
@@ -41,6 +42,8 @@ func (ms *Microservice) acceptConnections(serviceFunc func(conn net.Conn)) {
 			return
 		}
 
+		fmt.Println("[SERVICE]: accepted connection")
+
 		go serviceFunc(conn)
 	}
 }
@@ -56,7 +59,7 @@ func (ms *Microservice) pingService(conn net.Conn) {
 			return
 		}
 
-		fmt.Println(request)
+		fmt.Println("[SERVICE]: received request: ", request)
 
 		curr_time := time.Now()
 
@@ -65,7 +68,7 @@ func (ms *Microservice) pingService(conn net.Conn) {
 			ConnectionID: request.ConnectionID,
 			Type:         request.Type,
 			Code:         protocol.SUCCESS,
-			Content:      curr_time.String(),
+			Content:      curr_time.Format("2006-01-02 15:04:05"),
 		}
 
 		err = protocol.Send(writer, response)

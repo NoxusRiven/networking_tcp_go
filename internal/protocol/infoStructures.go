@@ -54,11 +54,11 @@ type Connection struct {
 }
 
 type AgentInfo struct {
-	ID   string
+	ID     string
+	NodeID string
+
 	Host string
 	Port string
-
-	//? maybe store info of LB in agent
 
 	LastHeartbeat time.Time
 	Status        NodeStatus
@@ -71,9 +71,8 @@ type AgentInfo struct {
 }
 
 type MsInfo struct {
-	ID        string
-	Agent     AgentInfo
-	LBalancer LBalancerInfo
+	ID     string
+	NodeID string
 
 	Host string
 	Port string
@@ -83,18 +82,15 @@ type MsInfo struct {
 
 	status NodeStatus
 
-	// Conn net.Conn
-	// RW   *bufio.ReadWriter
-
 	Cmd *exec.Cmd
 }
 
 type LBalancerInfo struct {
-	ID   string
+	ID     string
+	NodeID string
+
 	Host string
 	Port string
-
-	//? maybe store agent info
 
 	LastHeartbeat time.Time
 	Status        NodeStatus

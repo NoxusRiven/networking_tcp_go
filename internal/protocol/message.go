@@ -29,6 +29,7 @@ const (
 	CREATE    MessageType = "CREATE"
 	DESTROY   MessageType = "DESTROY"
 	RESET     MessageType = "RESET"
+	UPDATE    MessageType = "UPDATE"
 	RAPORT    MessageType = "RAPORT"
 	HEARTBEAT MessageType = "HEARTBEAT"
 

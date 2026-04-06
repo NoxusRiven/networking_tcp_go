@@ -10,8 +10,7 @@ import (
 )
 
 /**
-*TODO: add register to controller
-*TODO: every controllerWorker should has its own connection (Dial func) and register
+*TODO: make api directly connect to lbs and do inteligent loadbalancing loadbalancers (prolly by load)
  */
 
 const (
@@ -100,7 +99,6 @@ func registerConn(conn net.Conn) (*bufio.ReadWriter, error) {
 	return bufio.NewReadWriter(r, w), nil
 }
 
-// TODO: change this to use protocol Send/receive
 func controllerWorker(rw *bufio.ReadWriter, reqChan chan controllerRequest) {
 
 	for req := range reqChan {

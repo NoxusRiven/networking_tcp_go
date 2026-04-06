@@ -3,12 +3,10 @@ package agent
 import (
 	"fmt"
 	"net"
-	crypto "networking/tcp/internal/cryptography"
 	"networking/tcp/internal/protocol"
 	"os"
 	"os/exec"
 	"sync"
-	"time"
 )
 
 const (
@@ -23,7 +21,7 @@ type Agent struct {
 
 	listener net.Listener
 
-	mu sync.RWMutex
+	RWmu sync.RWMutex
 
 	//adding to base port number for ms
 	nextPortCount uint16
@@ -80,9 +78,9 @@ func (a *Agent) handleControllerRequest(conn *protocol.Connection, request proto
 	switch request.Type {
 	case protocol.CREATE:
 		serviceType := request.Content // e.g. "PING" — controller sends type in Content
-		a.mu.Lock()
+		a.RWmu.Lock()
 		port := a.GetNextPort()
-		a.mu.Unlock()
+		a.RWmu.Unlock()
 
 		ms, err := a.createMicroservice("localhost", port, serviceType)
 		if err != nil {
@@ -137,32 +135,13 @@ func (a *Agent) createMicroservice(host string, port string, ms_type string) (*p
 		Type: ms_type,
 	}
 
-	if err := a.connectToMicroservice(ms); err != nil {
-		return nil, err
-	}
-
 	// TODO: healthCheck(ms) when microservice implements it
 
-	a.mu.Lock()
+	a.RWmu.Lock()
 	a.msInfo[ms_type] = append(a.msInfo[ms_type], ms)
-	a.mu.Unlock()
+	a.RWmu.Unlock()
 
 	return ms, nil
-}
-
-func (a *Agent) connectToMicroservice(ms *protocol.MsInfo) error {
-	nc, err := net.DialTimeout("tcp", net.JoinHostPort(ms.Host, ms.Port), 5*time.Second)
-	if err != nil {
-		return err
-	}
-
-	conn := protocol.NewConnection(nc)
-
-	conn.ID = crypto.GenerateID()
-
-	a.msConn[conn.ID] = conn
-
-	return nil
 }
 
 func (a *Agent) KillAllMS() {
