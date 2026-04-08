@@ -3,10 +3,19 @@ package agent
 import (
 	"fmt"
 	"net"
+	"networking/tcp/internal/logger"
 	"networking/tcp/internal/protocol"
 	"os"
 	"os/exec"
 	"sync"
+)
+
+var log logger.Loggers = logger.InitLoggers(
+	logger.WithConsole(os.Stdout, os.Stderr),
+	logger.WithBaseOptions(
+		logger.PrefixField("agent"),
+		logger.FormatField(logger.BASE_PREFIX),
+	),
 )
 
 const (
@@ -44,11 +53,11 @@ func NewAgent(lisPort string) (*Agent, error) {
 }
 
 func (a *Agent) Start() {
-	fmt.Println("[AGENT]: Agent listening for Controller on", a.listener.Addr().String())
+	log["console"].Debug("Agent listening for Controller on %s", a.listener.Addr().String())
 
 	conn, err := a.listener.Accept()
 	if err != nil {
-		fmt.Println("[AGENT]: Accept error", err)
+		log["console"].Debug("Accept error %w", err)
 		return
 	}
 
@@ -63,7 +72,7 @@ func (a *Agent) handleControllerConnection(nc net.Conn) {
 	for {
 		request, err := protocol.Receive(conn.RW.Reader)
 		if err != nil {
-			fmt.Println("[AGENT]: Error while reading from controller", err)
+			log["console"].Debug("Error while reading from controller %w", err)
 			return
 		}
 
@@ -102,7 +111,7 @@ func (a *Agent) handleControllerRequest(conn *protocol.Connection, request proto
 	}
 
 	if err := protocol.Send(conn.RW.Writer, response); err != nil {
-		fmt.Println("[AGENT]: Error sending response:", err)
+		log["console"].Debug("Error sending response: %w", err)
 		return
 	}
 }
@@ -123,11 +132,15 @@ func (a *Agent) createMicroservice(host string, port string, ms_type string) (*p
 
 	err := cmd.Start()
 	if err != nil {
-		fmt.Println("[AGENT]: Error while starting ms process", err)
-		return nil, fmt.Errorf("[AGENT]: error start ms process: %w", err)
+		log["console"].Debug("Error while starting ms process %w", err)
+		//TODO: fix this to it returns string in a nice way
+		str := logger.GetString(log["string"], func() {
+			log["string"].Error("error start ms process: %w", err)
+		})
+		return nil, fmt.Errorf("%s", str)
 	}
 
-	fmt.Printf("[AGENT]: ms %s process started successfully! Pid: %d", ms_type, cmd.Process.Pid)
+	log["console"].Info("ms %s process started successfully! Pid: %d", ms_type, cmd.Process.Pid)
 
 	ms := &protocol.MsInfo{
 		Host: host,

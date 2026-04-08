@@ -2,10 +2,19 @@ package microservice
 
 import (
 	"bufio"
-	"fmt"
 	"net"
+	"networking/tcp/internal/logger"
 	"networking/tcp/internal/protocol"
+	"os"
 	"time"
+)
+
+var log logger.Loggers = logger.InitLoggers(
+	logger.WithConsole(os.Stdout, os.Stderr),
+	logger.WithBaseOptions(
+		logger.PrefixField("service"),
+		logger.FormatField(logger.BASE_PREFIX),
+	),
 )
 
 type Microservice struct {
@@ -13,7 +22,6 @@ type Microservice struct {
 }
 
 func NewMicroservice(listenerPort string) (*Microservice, error) {
-	fmt.Printf("Ms started listening on %s\n", listenerPort)
 	listen, err := net.Listen("tcp", listenerPort)
 	if err != nil {
 		return nil, err
@@ -25,12 +33,13 @@ func NewMicroservice(listenerPort string) (*Microservice, error) {
 }
 
 func (ms *Microservice) Start(serviceType string) {
-	fmt.Printf("[SERVICE]: service %s started on\n", serviceType)
+	log["console"].Info("service %s started on %s\n", serviceType, ms.listener.Addr())
+
 	switch serviceType {
 	case "ping":
 		ms.acceptConnections(ms.pingService)
 	default:
-		fmt.Println("[SERVICE]: unknow service type", serviceType)
+		log["console"].Error("unknow service type %s", serviceType)
 	}
 }
 
@@ -38,11 +47,11 @@ func (ms *Microservice) acceptConnections(serviceFunc func(conn net.Conn)) {
 	for {
 		conn, err := ms.listener.Accept()
 		if err != nil {
-			fmt.Println("[SERVICE]: accepting connection error", err)
+			log["console"].Error("accepting connection error %w", err)
 			return
 		}
 
-		fmt.Println("[SERVICE]: accepted connection")
+		log["console"].Info("accepted connection")
 
 		go serviceFunc(conn)
 	}
@@ -55,11 +64,11 @@ func (ms *Microservice) pingService(conn net.Conn) {
 	for {
 		request, err := protocol.Receive(reader)
 		if err != nil {
-			fmt.Println("[SERVICE]: reading request error", err)
+			log["console"].Error("reading request error %w", err)
 			return
 		}
 
-		fmt.Println("[SERVICE]: received request: ", request)
+		log["console"].Debug("received request: %s", request)
 
 		curr_time := time.Now()
 
@@ -73,7 +82,7 @@ func (ms *Microservice) pingService(conn net.Conn) {
 
 		err = protocol.Send(writer, response)
 		if err != nil {
-			fmt.Println("[SERVICE]: sending response error", err)
+			log["console"].Error("sending response error %w", err)
 			return
 		}
 	}

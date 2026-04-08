@@ -4,10 +4,20 @@ import (
 	"fmt"
 	"net"
 	crypto "networking/tcp/internal/cryptography"
+	"networking/tcp/internal/logger"
 	"networking/tcp/internal/protocol"
+	"os"
 	"strings"
 	"sync"
 	"time"
+)
+
+var log logger.Loggers = logger.InitLoggers(
+	logger.WithConsole(os.Stdout, os.Stderr),
+	logger.WithBaseOptions(
+		logger.PrefixField("lbalancer"),
+		logger.FormatField(logger.BASE_PREFIX),
+	),
 )
 
 type LoadBalancer struct {
@@ -33,11 +43,11 @@ func NewLoadBalancer(listPort string) (*LoadBalancer, error) {
 }
 
 func (lb *LoadBalancer) Start() {
-	fmt.Println("[LBALANCER]: LoadBalancer listening for Controller on", lb.listener.Addr().String())
+	log["console"].Info("listening for Controller on %s", lb.listener.Addr().String())
 
 	conn, err := lb.listener.Accept()
 	if err != nil {
-		fmt.Println("[LBALANCER]: Accept error", err)
+		log["console"].Error("Accept error: %w", err)
 		return
 	}
 
@@ -52,7 +62,7 @@ func (lb *LoadBalancer) handleControllerConnection(nc net.Conn) {
 	for {
 		request, err := protocol.Receive(conn.RW.Reader)
 		if err != nil {
-			fmt.Println("[LBALANCER]: Error while reading from controller", err)
+			log["console"].Error("Error while reading from controller: %w", err)
 			return
 		}
 
@@ -105,19 +115,15 @@ func (lb *LoadBalancer) handleControllerRequest(conn *protocol.Connection, reque
 		var msType string
 		msType = strings.ToLower(string(request.Type))
 
-		fmt.Println("MS type: ", msType)
-
 		//take first ms with this type
 		services := lb.msInfo[msType]
 
 		if len(services) < 1 {
-			fmt.Println("[LBALANCER]: no services available")
+			log["console"].Error("no services available")
 			return
 		}
 
 		ms := services[0]
-
-		fmt.Println("MS full ", ms.ID, ms.Host, ms.Port, ms.Type, ms.NodeID)
 
 		msConn := lb.msConn[ms.ID]
 
@@ -142,7 +148,7 @@ func (lb *LoadBalancer) handleControllerRequest(conn *protocol.Connection, reque
 			}
 		}
 
-		fmt.Println("[LBALANCER]: response from ms: ", response)
+		log["console"].Debug("response from ms: %s", response)
 
 	default:
 		response = protocol.Message{
@@ -151,14 +157,17 @@ func (lb *LoadBalancer) handleControllerRequest(conn *protocol.Connection, reque
 	}
 
 	if err := protocol.Send(conn.RW.Writer, response); err != nil {
-		fmt.Println("[LBALANCER]: Error sending response:", err)
+		log["console"].Error("Error sending response: %w", err)
 		return
 	}
 }
 
 func parseMsFromMessage(msg protocol.Message) (*protocol.MsInfo, error) {
 	if msg.Content == "" {
-		return nil, fmt.Errorf("[LBALANCER]: Empty message while parsing ms")
+		err := logger.StrToError(log["string"], func() {
+			log["string"].Error("Empty message while parsing ms")
+		})
+		return nil, err
 	}
 
 	fmt.Printf("[LBALANCER]: message content %s\n", msg.Content)
@@ -167,7 +176,10 @@ func parseMsFromMessage(msg protocol.Message) (*protocol.MsInfo, error) {
 
 	expectedSplitCount := 5
 	if len(dataSplit) != expectedSplitCount {
-		return nil, fmt.Errorf("[LBALANCER]: Expected %d values while parsing ms, got: %v", expectedSplitCount, dataSplit)
+		err := logger.StrToError(log["string"], func() {
+			log["string"].Error("Expected %d values while parsing ms, got: %v", expectedSplitCount, dataSplit)
+		})
+		return nil, err
 	}
 
 	fmt.Printf("Created ms (%s %s %s %s %s)", dataSplit[0], dataSplit[1], dataSplit[2], dataSplit[3], dataSplit[4])
@@ -182,16 +194,33 @@ func parseMsFromMessage(msg protocol.Message) (*protocol.MsInfo, error) {
 }
 
 func (lb *LoadBalancer) connectToMicroservice(ms *protocol.MsInfo) error {
-	nc, err := net.DialTimeout("tcp", net.JoinHostPort(ms.Host, ms.Port), 5*time.Second)
-	if err != nil {
-		return err
+	address := net.JoinHostPort(ms.Host, ms.Port)
+
+	timeout := time.After(10 * time.Second)
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
+
+	var nc net.Conn
+	var err error
+
+	for {
+		select {
+		case <-timeout:
+			return fmt.Errorf("timeout connecting to microservice %s", address)
+
+		case <-ticker.C:
+			nc, err = net.DialTimeout("tcp", address, 1*time.Second)
+			if err == nil {
+				conn := protocol.NewConnection(nc)
+				conn.ID = crypto.GenerateID()
+
+				lb.RWmu.Lock()
+				lb.msConn[ms.ID] = conn
+				lb.RWmu.Unlock()
+
+				log["console"].Info("Connected to microservice: %s", address)
+				return nil
+			}
+		}
 	}
-
-	conn := protocol.NewConnection(nc)
-
-	conn.ID = crypto.GenerateID()
-
-	lb.msConn[ms.ID] = conn
-
-	return nil
 }

@@ -2,17 +2,20 @@ package main
 
 import (
 	"fmt"
-	"networking/tcp/internal/protocol"
+	"networking/tcp/internal/logger"
+)
+
+var Log logger.Loggers = logger.InitLoggers(
+	logger.WithBaseOptions(
+		logger.PrefixField("test"),
+		logger.FormatField(logger.BASE_PREFIX),
+	),
 )
 
 func main() {
-	ms := &protocol.MsInfo{
-		ID:   "123",
-		Type: "PING",
-		Host: "localhost",
-		Port: "20000",
-	}
+	str := logger.GetString(Log["string"], func() {
+		Log["string"].Debug("test message")
+	})
 
-	//fmt.Println(string(ms))
-	fmt.Printf("%#v", ms)
+	fmt.Print(str)
 }
