@@ -39,13 +39,27 @@ func NewLoggerOpt(opts ...BaseLoggerOpt) *BaseLogger {
 	return l
 }
 
+const (
+	LogCount = 2
+)
+
 type LoggerConfig struct {
-	out      *os.File
-	err      *os.File
+	keys []string
+
+	out *os.File
+	err *os.File
+
 	baseOpts []BaseLoggerOpt
 }
 
 type LogInitOption func(*LoggerConfig)
+
+// 1 string, 2 console, only first 2 labels will be concidered
+func CustomLoggerKeys(keys ...string) LogInitOption {
+	return func(c *LoggerConfig) {
+		c.keys = keys
+	}
+}
 
 func WithConsole(out, err *os.File) LogInitOption {
 	return func(c *LoggerConfig) {
@@ -63,7 +77,9 @@ func WithBaseOptions(opts ...BaseLoggerOpt) LogInitOption {
 type Loggers map[string]Logger
 
 func InitLoggers(opts ...LogInitOption) Loggers {
-	logCnfg := &LoggerConfig{}
+	logCnfg := &LoggerConfig{
+		keys: []string{"string"},
+	}
 
 	for _, opt := range opts {
 		opt(logCnfg)
@@ -77,13 +93,18 @@ func InitLoggers(opts ...LogInitOption) Loggers {
 		console := NewConsoleLogger(logCnfg.out, logCnfg.err)
 		console.Base = base
 
-		loggers["console"] = console
+		if len(logCnfg.keys) < 2 {
+			loggers["console"] = console
+		} else {
+			loggers[logCnfg.keys[1]] = console
+		}
+
 	}
 
 	strLog := NewStringLogger()
 	strLog.Base = base
 
-	loggers["string"] = strLog
+	loggers[logCnfg.keys[0]] = strLog
 
 	return loggers
 }
