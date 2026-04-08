@@ -5,10 +5,10 @@ Also learning GO lang while making this project
 
 
 # Usage
-- build agent and microservice to exe files
+- build agent, loadbalancer and microservice nodes
 - run files in order:
     * controller
     * api
     * cli
 
-for now to use Microservice you need external cli to connect to it and send request, because loadbalancer isn't implemented yet
+Only supported feature for now is Ping, pings the server and server responds with current timestamp
