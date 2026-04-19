@@ -82,6 +82,7 @@ func (lb *LoadBalancer) handleControllerRequest(conn *protocol.Connection, reque
 		ms, err := parseMsFromMessage(request)
 		if err != nil {
 			response = protocol.Message{
+				ID:           request.ID,
 				Type:         protocol.UPDATE,
 				ConnectionID: request.ConnectionID,
 				Code:         protocol.ERROR,
@@ -94,6 +95,7 @@ func (lb *LoadBalancer) handleControllerRequest(conn *protocol.Connection, reque
 
 		if err = lb.connectToMicroservice(ms); err != nil {
 			response = protocol.Message{
+				ID:           request.ID,
 				Type:         protocol.UPDATE,
 				ConnectionID: request.ConnectionID,
 				Code:         protocol.ERROR,
@@ -104,7 +106,7 @@ func (lb *LoadBalancer) handleControllerRequest(conn *protocol.Connection, reque
 
 		fmt.Printf("[LBALANCER]: Successfully added ms %s:%s type:%s\n", ms.Host, ms.Port, ms.Type)
 
-		response = protocol.Message{Code: protocol.SUCCESS}
+		response = protocol.Message{ID: request.ID, Type: request.Type, Code: protocol.SUCCESS}
 
 	case protocol.PING:
 		fallthrough
@@ -129,6 +131,7 @@ func (lb *LoadBalancer) handleControllerRequest(conn *protocol.Connection, reque
 
 		if msConn == nil {
 			response = protocol.Message{
+				ID:           request.ID,
 				Type:         request.Type,
 				Code:         protocol.ERROR,
 				ConnectionID: request.ConnectionID,
@@ -141,6 +144,7 @@ func (lb *LoadBalancer) handleControllerRequest(conn *protocol.Connection, reque
 		response, err = protocol.Receive(msConn.RW.Reader)
 		if err != nil {
 			response = protocol.Message{
+				ID:           request.ID,
 				Type:         request.Type,
 				Code:         protocol.ERROR,
 				ConnectionID: request.ConnectionID,
@@ -152,7 +156,7 @@ func (lb *LoadBalancer) handleControllerRequest(conn *protocol.Connection, reque
 
 	default:
 		response = protocol.Message{
-			Type: protocol.CREATE, Code: protocol.ERROR, Content: "unknown command: " + string(request.Type),
+			ID: request.ID, Type: protocol.CREATE, Code: protocol.ERROR, Content: "unknown command: " + string(request.Type),
 		}
 	}
 
@@ -212,7 +216,7 @@ func (lb *LoadBalancer) connectToMicroservice(ms *protocol.MsInfo) error {
 			nc, err = net.DialTimeout("tcp", address, 1*time.Second)
 			if err == nil {
 				conn := protocol.NewConnection(nc)
-				conn.ID = crypto.GenerateID()
+				conn.ID = crypto.GenerateID(crypto.CONN)
 
 				lb.RWmu.Lock()
 				lb.msConn[ms.ID] = conn

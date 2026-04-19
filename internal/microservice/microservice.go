@@ -73,6 +73,7 @@ func (ms *Microservice) pingService(conn net.Conn) {
 		curr_time := time.Now()
 
 		response := protocol.Message{
+			ID:           request.ID,
 			SessionID:    request.SessionID,
 			ConnectionID: request.ConnectionID,
 			Type:         request.Type,

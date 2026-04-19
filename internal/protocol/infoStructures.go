@@ -1,20 +1,10 @@
 package protocol
 
 import (
-	"bufio"
-	"net"
 	"os/exec"
 	"sync"
 	"time"
 )
-
-// AgentInfo holds metadata for an agent. Use Host+Port when controller dials
-// agent's server for CREATE/control requests.
-//
-// Connection ownership:
-//   - New model (agent connects to controller): connection lives in ConnectionManager.
-//     Conn and RW are nil.
-//   - Legacy (controller spawns agent): Conn and RW are set. Deprecated.
 
 type NodeStatus int
 
@@ -24,15 +14,6 @@ const (
 	Unknown
 )
 
-type ConnectionType int
-
-const (
-	ConnUnknown ConnectionType = iota
-	ConnAPI
-	ConnAgent
-	ConnLB
-)
-
 type ServiceType string
 
 const (
@@ -40,18 +21,6 @@ const (
 	UpladService    ServiceType = "FILE_UPLOAD"
 	DownloadService ServiceType = "FILE_DOWNLOAD"
 )
-
-// if connection has id it was registered
-type Connection struct {
-	ID string
-
-	Conn net.Conn
-	RW   *bufio.ReadWriter
-
-	mu sync.Mutex
-
-	closeOnce sync.Once
-}
 
 type AgentInfo struct {
 	ID     string
@@ -100,22 +69,6 @@ type LBalancerInfo struct {
 	Cmd *exec.Cmd
 
 	Mu sync.RWMutex // protects mutable fields
-}
-
-func NewConnection(nc net.Conn) *Connection {
-	return &Connection{
-		Conn: nc,
-		RW: bufio.NewReadWriter(
-			bufio.NewReader(nc),
-			bufio.NewWriter(nc),
-		),
-	}
-}
-
-func (c *Connection) Close() {
-	c.closeOnce.Do(func() {
-		c.Conn.Close()
-	})
 }
 
 func (a *AgentInfo) Close() {

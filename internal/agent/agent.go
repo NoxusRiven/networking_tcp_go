@@ -94,19 +94,19 @@ func (a *Agent) handleControllerRequest(conn *protocol.Connection, request proto
 		ms, err := a.createMicroservice("localhost", port, serviceType)
 		if err != nil {
 			response = protocol.Message{
-				Type: protocol.CREATE, Code: protocol.ERROR, Content: err.Error(),
+				ID: request.ID, Type: protocol.CREATE, Code: protocol.ERROR, Content: err.Error(),
 			}
 			break
 		}
 
 		response = protocol.Message{
-			Type: protocol.CREATE, Code: protocol.SUCCESS,
+			ID: request.ID, Type: protocol.CREATE, Code: protocol.SUCCESS,
 			Content: net.JoinHostPort(ms.Host, ms.Port),
 		}
 
 	default:
 		response = protocol.Message{
-			Type: protocol.CREATE, Code: protocol.ERROR, Content: "unknown command: " + string(request.Type),
+			ID: request.ID, Type: protocol.CREATE, Code: protocol.ERROR, Content: "unknown command: " + string(request.Type),
 		}
 	}
 

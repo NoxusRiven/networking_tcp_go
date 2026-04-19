@@ -44,7 +44,9 @@ const (
 	ERROR   CodeType = 400
 )
 
+// TODO: support handling for message id
 type Message struct {
+	ID           string      `json:"ID,omitempty"`
 	SessionID    string      `json:"sessionID,omitempty"`
 	ConnectionID string      `json:"connectionID,omitempty"`
 	Type         MessageType `json:"type"`

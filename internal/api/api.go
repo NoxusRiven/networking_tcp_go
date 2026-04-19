@@ -126,7 +126,7 @@ func (api *APIGateway) handleClient(client net.Conn) {
 	reader := bufio.NewReader(client)
 	writer := bufio.NewWriter(client)
 
-	sessionID := crypto.GenerateID()
+	sessionID := crypto.GenerateID(crypto.INSTANCE_NODE)
 
 	for {
 		line, err := reader.ReadBytes('\n')

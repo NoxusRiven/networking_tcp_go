@@ -42,7 +42,9 @@ const (
 // ##################################### STRUCTURES #####################################
 
 // TODO: if agent is in the same host as controller he can choose ports otherwise controller sets boundry or just a free port and agents sends back wich port he got in remote host
-// TODO: NOW! for now make lb loadbalancing in controller, after that change that so controller doesnt get client requests, only in edege cases api will send requests to controller
+// TODO: controller doesnt get client requests, only in edege cases api will send requests to controller
+// TODO: controller should update "lastHeartBeat" of nodes when they send hearthbeat and with every interaction
+// TODO: change system and buissnes listeners to be just one, and only add second connection and use it when working with files
 type Controller struct {
 	apiListener    net.Listener
 	systemListener net.Listener
@@ -74,6 +76,7 @@ func NewController() (*Controller, error) {
 		return nil, err
 	}
 
+	//! depracated, delete later
 	systemListener, err := net.Listen("tcp", SYSTEM_PORT)
 	if err != nil {
 		return nil, err
@@ -101,18 +104,20 @@ func NewController() (*Controller, error) {
 func (c *Controller) Start() {
 	log["console"].Info("Controller started")
 
-	go c.acceptAPI()
+	go c.acceptConnection()
+	//! depracated delete later
 	go c.acceptSystem()
 	//go c.runHeartbeatChecker()
 }
 
+// ? after registering connection maybe start receive loop
 // Node id is unused for API
 func (c *Controller) Register(conn *protocol.Connection, connType protocol.ConnectionType, nodeID string) string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	//TODO: make it that nodes generate thier id and report back to controller wich id they have
-	conn.ID = crypto.GenerateID()
+	conn.ID = crypto.GenerateID(crypto.CONN)
 
 	switch connType {
 	case protocol.ConnAPI:
@@ -121,6 +126,9 @@ func (c *Controller) Register(conn *protocol.Connection, connType protocol.Conne
 		c.agentsConn[nodeID] = conn
 	case protocol.ConnLB:
 		c.lbConn[nodeID] = conn
+	default:
+		log["console"].Error("Not able to register node ", connType)
+		conn = nil
 	}
 
 	return conn.ID
@@ -149,7 +157,7 @@ func (c *Controller) acceptSystem() {
 	for {
 		conn, err := c.systemListener.Accept()
 		if err != nil {
-			log["console"].Info("System accept error: %w", err)
+			log["console"].Info("System accept error: %v", err)
 			continue
 		}
 
@@ -159,13 +167,14 @@ func (c *Controller) acceptSystem() {
 	}
 }
 
+// ! depraceted delete later
 func (c *Controller) handleSystemConn(nc net.Conn) {
 	conn := protocol.NewConnection(nc)
 	defer conn.Close()
 
 	msg, err := protocol.Receive(conn.RW.Reader)
 	if err != nil {
-		log["console"].Info("system register error: %w", err)
+		log["console"].Info("system register error: %v", err)
 		return
 	}
 
@@ -175,7 +184,7 @@ func (c *Controller) handleSystemConn(nc net.Conn) {
 		//TODO: this will be later used in register
 		//port := msg.Content
 		connType = protocol.ConnAgent
-		//agent have to provide thier id to be registered
+		//agent have to provide thier id to be registeredi
 		id := msg.Content
 
 		c.Register(conn, connType, id)
@@ -253,13 +262,12 @@ func (c *Controller) handleSystemConn(nc net.Conn) {
 // performDeepCheck runs additional safety checks when agent times out.
 // Expand with: cleanup microservice refs, notify load balancers, metrics, etc.
 func (c *Controller) performDeepCheck(agentID string) {
-	// TODO: notify load balancer to stop routing to this agent
 	log["console"].Debug("[DEEP CHECK] Agent %s removed — microservices and LBs may need rebalancing\n", agentID)
 }
 
 // TODO: controller creates agent (also connect) then after when sending request to agent about creating new service, agent confirms creating ms and then message is sent to lb about new ms and to update data, so node is always in sync
 func (c *Controller) createNewMessageNode(agentPort string, lbPort string) (*protocol.AgentInfo, *protocol.LBalancerInfo, error) {
-	nodeID := crypto.GenerateID()
+	msgNodeID := crypto.GenerateID(crypto.MESSAGE_NODE)
 
 	agent, err := c.createNewAgent(agentPort)
 	if err != nil {
@@ -272,43 +280,62 @@ func (c *Controller) createNewMessageNode(agentPort string, lbPort string) (*pro
 		return nil, nil, err
 	}
 
-	agent.NodeID = nodeID
-	lb.NodeID = nodeID
+	agent.NodeID = msgNodeID
+	lb.NodeID = msgNodeID
 
 	//only returns if both of them succeded
 	return agent, lb, nil
+}
+
+func (c *Controller) HandleHeartBeat(msg protocol.Message) {
+	//? determine who sent heart beat from msg content ("AGENT"/"LB")
+}
+
+func (c *Controller) NodeAsyncEvent(msg protocol.Message) {
+	/**
+	*TODO: async events:
+		** raports
+		** critical events (something crashed)
+	*/
+
+	switch msg.Type {
+	default:
+		log["console"].Error("Unsupported NodeAsyncEvent type: %s", msg.Type)
+	}
+
 }
 
 // ################################## CORE FUNCTIONS #####################################
 
 // #################################  API FUNCTIONS ################################
 
-func (c *Controller) acceptAPI() {
+func (c *Controller) acceptConnection() {
 	log["console"].Info("Listening for API on %s", c.apiListener.Addr())
 
 	for {
 		conn, err := c.apiListener.Accept()
 		if err != nil {
-			log["console"].Info("API accept error: %w", err)
+			log["console"].Info("Connection accept error: %v", err)
 			continue
 		}
 
-		log["console"].Info("Accepted new api connection")
+		log["console"].Info("Accepted new connection")
 
-		go c.handleAPIConn(conn)
+		go c.handleConnection(conn)
 	}
 }
 
-func (c *Controller) handleAPIConn(nc net.Conn) {
+func (c *Controller) handleConnection(nc net.Conn) {
 	conn := protocol.NewConnection(nc)
 	defer conn.Close()
 
 	msg, err := protocol.Receive(conn.RW.Reader)
 	if err != nil {
-		log["console"].Info("api register error: %w", err)
+		log["console"].Info("connection register error: %v", err)
 		return
 	}
 
+	//! depracated, delete later
 	//gotta receive just reg_api to sync request sending and receiving
 	var response protocol.Message
 	if msg.Type != protocol.REG_API {
@@ -355,6 +382,9 @@ func (c *Controller) handleAPIConn(nc net.Conn) {
 }
 
 func (c *Controller) handleAPIRequst(conn *protocol.Connection, msg protocol.Message) {
+
+	//var response protocol.Message
+
 	switch msg.Type {
 	case protocol.PING:
 
@@ -362,13 +392,14 @@ func (c *Controller) handleAPIRequst(conn *protocol.Connection, msg protocol.Mes
 		ms, err := c.findService("ping")
 
 		if err != nil {
-			resp := protocol.Message{
+			response := protocol.Message{
 				Type:    protocol.PING,
 				Code:    protocol.ERROR,
 				Content: err.Error(),
 			}
 
-			protocol.Send(conn.RW.Writer, resp)
+			protocol.Send(conn.RW.Writer, response)
+
 			return
 		}
 
@@ -383,14 +414,16 @@ func (c *Controller) handleAPIRequst(conn *protocol.Connection, msg protocol.Mes
 
 	default:
 
-		resp := protocol.Message{
+		response := protocol.Message{
 			Type:    protocol.PING,
 			Code:    protocol.ERROR,
 			Content: "Invalid message type",
 		}
 
-		protocol.Send(conn.RW.Writer, resp)
+		protocol.Send(conn.RW.Writer, response)
 	}
+
+	//protocol.Send(conn.RW.Writer, response)
 }
 
 // #################################  API FUNCTIONS ################################
@@ -413,7 +446,7 @@ func (c *Controller) createNewAgent(port string) (*protocol.AgentInfo, error) {
 
 	if err := cmd.Start(); err != nil {
 		return nil, logger.StrToError(log["string"], func() {
-			log["string"].Error("start agent process: %w\n", err)
+			log["string"].Error("start agent process: %v\n", err)
 		})
 	}
 
@@ -431,12 +464,14 @@ func (c *Controller) createNewAgent(port string) (*protocol.AgentInfo, error) {
 	conn, err := c.connectToAgent(agent)
 	if err != nil {
 		_ = cmd.Process.Kill()
-		return nil, logger.StrToError(log["string"], func() { log["string"].Error("connect to agent: %w\n", err) })
+		return nil, logger.StrToError(log["string"], func() { log["string"].Error("connect to agent: %v\n", err) })
 	}
 
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	c.agentsInfo[conn.ID] = agent
+	c.mu.Unlock()
+
+	go conn.ReceiveLoop(c)
 
 	log["console"].Debug("Agent started {ID:%s PID:%d}\n", id, cmd.Process.Pid)
 	return agent, nil
@@ -606,7 +641,7 @@ func (c *Controller) createNewLoadBalancer(port string) (*protocol.LBalancerInfo
 
 	if err := cmd.Start(); err != nil {
 		return nil, logger.StrToError(log["string"], func() {
-			log["string"].Error("start loadbalancer process: %w\n", err)
+			log["string"].Error("start loadbalancer process: %v\n", err)
 		})
 	}
 
@@ -625,13 +660,15 @@ func (c *Controller) createNewLoadBalancer(port string) (*protocol.LBalancerInfo
 	if err != nil {
 		_ = cmd.Process.Kill()
 		return nil, logger.StrToError(log["string"], func() {
-			log["string"].Error("connect to loadbalancer: %w\n", err)
+			log["string"].Error("connect to loadbalancer: %v\n", err)
 		})
 	}
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.lbInfo[conn.ID] = lb
+
+	go conn.ReceiveLoop(c)
 
 	log["console"].Debug("Loadbalancer started {ID:%s PID:%d}\n", id, cmd.Process.Pid)
 	return lb, nil
@@ -708,7 +745,7 @@ func (c *Controller) createNewService(serviceType string) (*protocol.MsInfo, err
 	var err error
 
 	if !hasAgent || !hasLB {
-		//TODO: later change to createNewMessageNode
+		//TODO: Message node now doesnt have to have 1 agent and 1 lb, it will contain many lbs and 1 agent
 		agent, lb, err = c.createNewMessageNode(BASE_PORT_AGENT, BASE_PORT_LBALANCER)
 		if err != nil {
 			return nil, err
@@ -744,46 +781,38 @@ func (c *Controller) createNewService(serviceType string) (*protocol.MsInfo, err
 
 	// message agent to create service
 	request := protocol.Message{SessionID: agent.ID, Type: protocol.CREATE, Content: serviceType}
-	if err := protocol.Send(agentConn.RW.Writer, request); err != nil {
+
+	response, err := agentConn.SendRequest(request)
+	if err != nil {
 		return nil, logger.StrToError(log["string"], func() {
-			log["string"].Error("send CREATE: %w\n", err)
+			log["string"].Error("send CREATE: %v\n", err)
 		})
 	}
 
-	response, err := protocol.Receive(agentConn.RW.Reader)
-	if err != nil {
-		return nil, err
-	}
-
 	ms := parseMsFromResponse(response.Content)
-	ms.ID = crypto.GenerateID()
+	ms.ID = crypto.GenerateID(crypto.INSTANCE_NODE)
 	ms.NodeID = agent.NodeID
 	ms.Type = serviceType
 
 	//inform load balancer about newly created service
 	request = protocol.Message{SessionID: response.SessionID, Type: protocol.UPDATE, Content: string(ms.ID + ";" + ms.Host + ";" + ms.Port + ";" + ms.NodeID + ";" + ms.Type)}
-	if err = protocol.Send(lbConn.RW.Writer, request); err != nil {
-		return nil, logger.StrToError(log["string"], func() {
-			log["string"].Error("send ms info to lb: %w\n", err)
-		})
-	}
-
-	response, err = protocol.Receive(lbConn.RW.Reader)
+	response, err = lbConn.SendRequest(request)
 	if err != nil {
-		return nil, err
-	}
-
-	if response.Code != protocol.SUCCESS {
+		return nil, logger.StrToError(log["string"], func() {
+			log["string"].Error("send ms info to lb: %v\n", err)
+		})
+	} else if response.Code != protocol.SUCCESS {
 		return nil, logger.StrToError(log["string"], func() {
 			log["string"].Error("Bad code type %d, message: %s\n", response.Code, response.Content)
 		})
 	}
 
+	log["console"].Debug("LB response after getting ms data: ", response)
+
 	c.mu.Lock()
 	c.microservices[serviceType] = append(c.microservices[serviceType], ms)
 	c.mu.Unlock()
 
-	//make ms_info struct and return it
 	return ms, nil
 }
 
@@ -821,12 +850,12 @@ func (c *Controller) messageService(ms *protocol.MsInfo, msg protocol.Message) (
 		})
 	}
 
-	err := protocol.Send(conn.RW.Writer, msg)
+	response, err := conn.SendRequest(msg)
 	if err != nil {
 		return protocol.Message{}, err
 	}
 
-	return protocol.Receive(conn.RW.Reader)
+	return response, nil
 }
 
 // ################################ MICROSERVICE FUNCTIONS ###################################
