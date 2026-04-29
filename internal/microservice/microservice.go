@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-var log logger.Loggers = logger.InitLoggers(
+var log logger.Loggers = logger.NewLoggers(
 	logger.WithConsole(os.Stdout, os.Stderr),
 	logger.WithBaseOptions(
 		logger.PrefixField("service"),
