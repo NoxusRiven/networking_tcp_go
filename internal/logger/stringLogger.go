@@ -42,10 +42,16 @@ func GetString(log Logger, f func()) string {
 	return "logger.GetString(): Error while coverting Logger to StringLogger"
 }
 
-func StrToError(log Logger, fstr string) error {
-	str := GetString(log, func() {
-		log.Error(fstr)
-	})
+// ! depracted
+// ! change its usage in other files
+func StrToError(log Logger, f func()) error {
+	str := GetString(log, f)
+
+	return fmt.Errorf("%s", str)
+}
+
+func StrToErrorNew(log Logger, fstr string) error {
+	str := GetString(log, func() { log.Error(fstr) })
 
 	return fmt.Errorf("%s", str)
 }
