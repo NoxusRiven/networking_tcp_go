@@ -5,6 +5,16 @@ import (
 	"time"
 )
 
+/**
+*Loggers are created with a single function that let's you customize your loggers, wich types of loggers to add and how format thier messages. Defined in "logger/config.go"
+
+*To access loggers you need to create instance of "Loggers" and use key of logger you inted to use
+'loggers["console"]' ect. You can define your own keys with provided function in "logger/config.go"
+
+*Use logger messages like how would you use formated strings (Sprintf)
+
+*/
+
 type Format string
 
 const (

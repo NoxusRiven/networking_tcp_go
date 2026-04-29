@@ -5,6 +5,8 @@ import (
 	"strings"
 )
 
+// brief explanation how to create loggers in logger/logger.go
+
 type BaseLoggerOpt func(*BaseLogger)
 
 func FormatField(f Format) BaseLoggerOpt {
@@ -76,7 +78,7 @@ func WithBaseOptions(opts ...BaseLoggerOpt) LogInitOption {
 
 type Loggers map[string]Logger
 
-func InitLoggers(opts ...LogInitOption) Loggers {
+func NewLoggers(opts ...LogInitOption) Loggers {
 	logCnfg := &LoggerConfig{
 		keys: []string{"string"},
 	}
