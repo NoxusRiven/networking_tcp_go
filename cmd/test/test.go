@@ -1,26 +1,15 @@
 package main
 
-import (
-	"fmt"
-	"networking/tcp/internal/logger"
-	"os"
-)
-
-var Log logger.Loggers = logger.InitLoggers(
-	logger.CustomLoggerKeys("s", "c", "d", "e", "f", "g"),
-	logger.WithConsole(os.Stdout, os.Stderr),
-	logger.WithBaseOptions(
-		logger.PrefixField("test"),
-		logger.FormatField(logger.BASE_PREFIX),
-	),
-)
+import "fmt"
 
 func main() {
-	str := logger.GetString(Log["s"], func() {
-		Log["s"].Debug("test message")
-	})
+	var mapTest map[string]string
 
-	fmt.Print(str)
+	testValue, ok := mapTest["test"]
 
-	Log["c"].Error("Error has occured!")
+	if !ok {
+		fmt.Println("Key not found")
+	} else {
+		fmt.Println("Value:", testValue)
+	}
 }

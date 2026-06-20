@@ -6,10 +6,11 @@ import (
 	"networking/tcp/internal/logger"
 	"networking/tcp/internal/protocol"
 	"os"
+	"strings"
 	"time"
 )
 
-var log logger.Loggers = logger.InitLoggers(
+var log logger.Loggers = logger.NewLoggers(
 	logger.WithConsole(os.Stdout, os.Stderr),
 	logger.WithBaseOptions(
 		logger.PrefixField("service"),
@@ -34,6 +35,8 @@ func NewMicroservice(listenerPort string) (*Microservice, error) {
 
 func (ms *Microservice) Start(serviceType string) {
 	log["console"].Info("service %s started on %s\n", serviceType, ms.listener.Addr())
+
+	serviceType = strings.ToLower(serviceType)
 
 	switch serviceType {
 	case "ping":

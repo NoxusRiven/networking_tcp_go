@@ -30,7 +30,7 @@ import (
 
 func main() {
 	//use flags to get data to api like address
-	api_gateway, err := api.NewAPIGateway(6969)
+	api_gateway, err := api.NewAPIGateway(4200)
 	if err != nil {
 		fmt.Println("Error:", err)
 		os.Exit(1)

@@ -49,16 +49,18 @@ func (c *Connection) Close() {
 }
 
 func (c *Connection) ReceiveLoop(node Node) {
-	fmt.Println("[Receive Loop] started receive loop!")
+	//fmt.Println("[Receive Loop] started receive loop!")
 	for {
 		msg, err := Receive(c.RW.Reader)
 		if err != nil {
-			fmt.Println("[Receive loop]: ", err)
+			fmt.Println("[Receive loop][ERROR]", c.ID, ": ", err)
+			delete(c.pending, msg.ID)
+			return
 		}
 
 		if ch, ok := c.pending[msg.ID]; ok {
 			ch <- msg
-			fmt.Println("[Receive Loop]: received and deleting", msg.ID)
+			//fmt.Println("[Receive Loop]: received and deleting", msg.ID)
 			delete(c.pending, msg.ID)
 			continue
 		}
@@ -67,9 +69,8 @@ func (c *Connection) ReceiveLoop(node Node) {
 		case HEARTBEAT:
 			node.HandleHeartBeat(msg) //? maybe just need content bcs you know its heartbeat
 		default:
-			node.NodeAsyncEvent(msg)
+			node.NodeAsyncEvent(msg, c)
 		}
-
 	}
 }
 
@@ -83,6 +84,7 @@ func (c *Connection) SendRequest(msg Message) (Message, error) {
 	fmt.Println("[Send Request] started pending on key", msg.ID)
 	c.mu.Unlock()
 
+	fmt.Println("[Send request] full message: ", msg)
 	c.mu.Lock()
 	Send(c.RW.Writer, msg)
 	c.mu.Unlock()

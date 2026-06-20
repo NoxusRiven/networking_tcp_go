@@ -51,7 +51,9 @@ type MsInfo struct {
 
 	status NodeStatus
 
-	Cmd *exec.Cmd
+	Cmd *exec.Cmd `json:"-"`
+
+	Mu sync.RWMutex `json:"-"` // protects mutable fields
 }
 
 type LBalancerInfo struct {
@@ -66,9 +68,9 @@ type LBalancerInfo struct {
 
 	Microservices map[string][]*MsInfo
 
-	Cmd *exec.Cmd
+	Cmd *exec.Cmd `json:"-"`
 
-	Mu sync.RWMutex // protects mutable fields
+	Mu sync.RWMutex `json:"-"` // protects mutable fields
 }
 
 func (a *AgentInfo) Close() {

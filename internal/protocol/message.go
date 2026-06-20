@@ -26,12 +26,16 @@ const (
 	REG_LB    MessageType = "REGISTER_LOADBALANCER"
 
 	// system
-	CREATE    MessageType = "CREATE"
-	DESTROY   MessageType = "DESTROY"
-	RESET     MessageType = "RESET"
+	CREATE  MessageType = "CREATE"
+	DESTROY MessageType = "DESTROY"
+	RESET   MessageType = "RESET"
+	//update can be used for many things based on context of node using it and content of message
 	UPDATE    MessageType = "UPDATE"
 	RAPORT    MessageType = "RAPORT"
 	HEARTBEAT MessageType = "HEARTBEAT"
+
+	//? might not be needed, check this out
+	LB_SYNC MessageType = "SYNCRONIZE_LOADBALANCERS"
 
 	UNKNOWN MessageType = "UNKNOWN"
 )
@@ -44,20 +48,19 @@ const (
 	ERROR   CodeType = 400
 )
 
-// TODO: support handling for message id
 type Message struct {
 	ID           string      `json:"ID,omitempty"`
 	SessionID    string      `json:"sessionID,omitempty"`
 	ConnectionID string      `json:"connectionID,omitempty"`
 	Type         MessageType `json:"type"`
 	Code         CodeType    `json:"code,omitempty"`
-	Content      string      `json:"content,omitempty"`
+	Content      any         `json:"content,omitempty"`
 }
 
 func (m Message) String() string {
 
 	parts := []string{
-		fmt.Sprintf("ID=%s", m.SessionID),
+		fmt.Sprintf("ID=%s", m.ID),
 		fmt.Sprintf("Type=%v", m.Type),
 	}
 
@@ -66,7 +69,7 @@ func (m Message) String() string {
 	}
 
 	if m.Content != "" {
-		parts = append(parts, fmt.Sprintf("Content=%s", m.Content))
+		parts = append(parts, fmt.Sprintf("Content=%v", m.Content))
 	}
 
 	return strings.Join(parts, " | ")
@@ -98,4 +101,12 @@ func Receive(reader *bufio.Reader) (Message, error) {
 	err = json.Unmarshal(raw, &msg)
 
 	return msg, err
+}
+
+func DecodeContent(content any, out any) error {
+	raw, err := json.Marshal(content)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(raw, out)
 }

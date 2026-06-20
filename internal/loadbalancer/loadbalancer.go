@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-var log logger.Loggers = logger.InitLoggers(
+var log logger.Loggers = logger.NewLoggers(
 	logger.WithConsole(os.Stdout, os.Stderr),
 	logger.WithBaseOptions(
 		logger.PrefixField("lbalancer"),
@@ -43,35 +43,39 @@ func NewLoadBalancer(listPort string) (*LoadBalancer, error) {
 }
 
 func (lb *LoadBalancer) Start() {
-	log["console"].Info("listening for Controller on %s", lb.listener.Addr().String())
+	log["console"].Info("listening on %s", lb.listener.Addr().String())
 
-	conn, err := lb.listener.Accept()
-	if err != nil {
-		log["console"].Error("Accept error: %w", err)
-		return
-	}
+	go func() {
+		for {
+			conn, err := lb.listener.Accept()
+			if err != nil {
+				log["console"].Error("Accept error: %w", err)
+				continue
+			}
 
-	go lb.handleControllerConnection(conn)
-
+			log["console"].Info("Accepted connection from %s", conn.RemoteAddr().String())
+			go lb.handleConnection(conn)
+		}
+	}()
 }
 
-func (lb *LoadBalancer) handleControllerConnection(nc net.Conn) {
+func (lb *LoadBalancer) handleConnection(nc net.Conn) {
 	conn := protocol.NewConnection(nc)
 	defer conn.Close()
 
 	for {
 		request, err := protocol.Receive(conn.RW.Reader)
 		if err != nil {
-			log["console"].Error("Error while reading from controller: %w", err)
+			log["console"].Error("Error while reading request: %v", err)
 			return
 		}
 
-		lb.handleControllerRequest(conn, request)
+		lb.handleRequest(conn, request)
 
 	}
 }
 
-func (lb *LoadBalancer) handleControllerRequest(conn *protocol.Connection, request protocol.Message) {
+func (lb *LoadBalancer) handleRequest(conn *protocol.Connection, request protocol.Message) {
 	var response protocol.Message
 	var err error
 
@@ -101,6 +105,7 @@ func (lb *LoadBalancer) handleControllerRequest(conn *protocol.Connection, reque
 				Code:         protocol.ERROR,
 				Content:      err.Error(),
 			}
+			lb.msInfo[ms.Type] = lb.msInfo[ms.Type][:len(lb.msInfo[ms.Type])-1] //remove ms from list if connection failed
 			break
 		}
 
@@ -108,6 +113,11 @@ func (lb *LoadBalancer) handleControllerRequest(conn *protocol.Connection, reque
 
 		response = protocol.Message{ID: request.ID, Type: request.Type, Code: protocol.SUCCESS}
 
+	case protocol.HEARTBEAT:
+		log["console"].Debug("Received heartbeat message")
+		response = protocol.Message{ID: request.ID, Type: request.Type, Code: protocol.SUCCESS}
+
+	//microservice operations
 	case protocol.PING:
 		fallthrough
 	case protocol.DOWNLOAD:
@@ -121,8 +131,15 @@ func (lb *LoadBalancer) handleControllerRequest(conn *protocol.Connection, reque
 		services := lb.msInfo[msType]
 
 		if len(services) < 1 {
-			log["console"].Error("no services available")
-			return
+			log["console"].Error("no services with type %s available", msType)
+			response = protocol.Message{
+				ID:           request.ID,
+				Type:         request.Type,
+				ConnectionID: request.ConnectionID,
+				Code:         protocol.ERROR,
+				Content:      "no services available",
+			}
+			break
 		}
 
 		ms := services[0]
@@ -176,7 +193,7 @@ func parseMsFromMessage(msg protocol.Message) (*protocol.MsInfo, error) {
 
 	fmt.Printf("[LBALANCER]: message content %s\n", msg.Content)
 
-	dataSplit := strings.Split(msg.Content, ";")
+	dataSplit := strings.Split(msg.Content.(string), ";")
 
 	expectedSplitCount := 5
 	if len(dataSplit) != expectedSplitCount {
@@ -193,7 +210,7 @@ func parseMsFromMessage(msg protocol.Message) (*protocol.MsInfo, error) {
 		Host:   dataSplit[1],
 		Port:   dataSplit[2],
 		NodeID: dataSplit[3],
-		Type:   dataSplit[4],
+		Type:   strings.ToLower(dataSplit[4]),
 	}, nil
 }
 

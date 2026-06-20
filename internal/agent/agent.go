@@ -10,7 +10,7 @@ import (
 	"sync"
 )
 
-var log logger.Loggers = logger.InitLoggers(
+var log logger.Loggers = logger.NewLoggers(
 	logger.WithConsole(os.Stdout, os.Stderr),
 	logger.WithBaseOptions(
 		logger.PrefixField("agent"),
@@ -86,7 +86,7 @@ func (a *Agent) handleControllerRequest(conn *protocol.Connection, request proto
 
 	switch request.Type {
 	case protocol.CREATE:
-		serviceType := request.Content // e.g. "PING" — controller sends type in Content
+		serviceType := request.Content.(string) // e.g. "PING" — controller sends type in Content
 		a.RWmu.Lock()
 		port := a.GetNextPort()
 		a.RWmu.Unlock()
@@ -133,11 +133,9 @@ func (a *Agent) createMicroservice(host string, port string, ms_type string) (*p
 	err := cmd.Start()
 	if err != nil {
 		log["console"].Debug("Error while starting ms process %w", err)
-		//TODO: fix this to it returns string in a nice way
-		str := logger.GetString(log["string"], func() {
+		return nil, logger.StrToError(log["string"], func() {
 			log["string"].Error("error start ms process: %w", err)
 		})
-		return nil, fmt.Errorf("%s", str)
 	}
 
 	log["console"].Info("ms %s process started successfully! Pid: %d", ms_type, cmd.Process.Pid)
