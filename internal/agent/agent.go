@@ -69,50 +69,9 @@ func (a *Agent) handleControllerConnection(nc net.Conn) {
 	conn := protocol.NewConnection(nc)
 	defer conn.Close()
 
+	conn.ReceiveLoop(a)
+
 	for {
-		request, err := protocol.Receive(conn.RW.Reader)
-		if err != nil {
-			log["console"].Debug("Error while reading from controller %w", err)
-			return
-		}
-
-		a.handleControllerRequest(conn, request)
-
-	}
-}
-
-func (a *Agent) handleControllerRequest(conn *protocol.Connection, request protocol.Message) {
-	var response protocol.Message
-
-	switch request.Type {
-	case protocol.CREATE:
-		serviceType := request.Content.(string) // e.g. "PING" — controller sends type in Content
-		a.RWmu.Lock()
-		port := a.GetNextPort()
-		a.RWmu.Unlock()
-
-		ms, err := a.createMicroservice("localhost", port, serviceType)
-		if err != nil {
-			response = protocol.Message{
-				ID: request.ID, Type: protocol.CREATE, Code: protocol.ERROR, Content: err.Error(),
-			}
-			break
-		}
-
-		response = protocol.Message{
-			ID: request.ID, Type: protocol.CREATE, Code: protocol.SUCCESS,
-			Content: net.JoinHostPort(ms.Host, ms.Port),
-		}
-
-	default:
-		response = protocol.Message{
-			ID: request.ID, Type: protocol.CREATE, Code: protocol.ERROR, Content: "unknown command: " + string(request.Type),
-		}
-	}
-
-	if err := protocol.Send(conn.RW.Writer, response); err != nil {
-		log["console"].Debug("Error sending response: %w", err)
-		return
 	}
 }
 
@@ -170,3 +129,47 @@ func (a *Agent) KillAllMS() {
 func healthCheck() error {
 	return nil
 }
+
+// ################################# NODE METHODS #################################
+
+func (a *Agent) HandleHeartBeat(msg protocol.Message) {
+
+}
+
+func (a *Agent) NodeAsyncEvent(request protocol.Message, conn *protocol.Connection) {
+
+	var response protocol.Message
+
+	switch request.Type {
+	case protocol.CREATE:
+		serviceType := request.Content.(string) // e.g. "PING" — controller sends type in Content
+		a.RWmu.Lock()
+		port := a.GetNextPort()
+		a.RWmu.Unlock()
+
+		ms, err := a.createMicroservice("localhost", port, serviceType)
+		if err != nil {
+			response = protocol.Message{
+				ID: request.ID, Type: protocol.CREATE, Code: protocol.ERROR, Content: err.Error(),
+			}
+			break
+		}
+
+		response = protocol.Message{
+			ID: request.ID, Type: protocol.CREATE, Code: protocol.SUCCESS,
+			Content: net.JoinHostPort(ms.Host, ms.Port),
+		}
+
+	default:
+		response = protocol.Message{
+			ID: request.ID, Type: protocol.CREATE, Code: protocol.ERROR, Content: "unknown command: " + string(request.Type),
+		}
+	}
+
+	if err := protocol.Send(conn.RW.Writer, response); err != nil {
+		log["console"].Error("Error sending response: %w", err)
+		return
+	}
+}
+
+// ################################# NODE METHODS #################################

@@ -70,116 +70,111 @@ func (lb *LoadBalancer) handleConnection(nc net.Conn) {
 			return
 		}
 
-		lb.handleRequest(conn, request)
+		var response protocol.Message
 
-	}
-}
-
-func (lb *LoadBalancer) handleRequest(conn *protocol.Connection, request protocol.Message) {
-	var response protocol.Message
-	var err error
-
-	switch request.Type {
-	//TODO: later extend this to parsing if update should add, delete or update ms data  (add - add, del - delete, nothing - just update) as a 6th part in msg
-	case protocol.UPDATE:
-		//update microservice data
-		ms, err := parseMsFromMessage(request)
-		if err != nil {
-			response = protocol.Message{
-				ID:           request.ID,
-				Type:         protocol.UPDATE,
-				ConnectionID: request.ConnectionID,
-				Code:         protocol.ERROR,
-				Content:      err.Error(),
+		switch request.Type {
+		//TODO: later extend this to parsing if update should add, delete or update ms data  (add - add, del - delete, nothing - just update) as a 6th part in msg
+		case protocol.UPDATE:
+			//update microservice data
+			ms, err := parseMsFromMessage(request)
+			if err != nil {
+				response = protocol.Message{
+					ID:           request.ID,
+					Type:         protocol.UPDATE,
+					ConnectionID: request.ConnectionID,
+					Code:         protocol.ERROR,
+					Content:      err.Error(),
+				}
+				break
 			}
-			break
-		}
 
-		lb.msInfo[ms.Type] = append(lb.msInfo[ms.Type], ms)
+			lb.msInfo[ms.Type] = append(lb.msInfo[ms.Type], ms)
 
-		if err = lb.connectToMicroservice(ms); err != nil {
-			response = protocol.Message{
-				ID:           request.ID,
-				Type:         protocol.UPDATE,
-				ConnectionID: request.ConnectionID,
-				Code:         protocol.ERROR,
-				Content:      err.Error(),
+			if err = lb.connectToMicroservice(ms); err != nil {
+				response = protocol.Message{
+					ID:           request.ID,
+					Type:         protocol.UPDATE,
+					ConnectionID: request.ConnectionID,
+					Code:         protocol.ERROR,
+					Content:      err.Error(),
+				}
+				lb.msInfo[ms.Type] = lb.msInfo[ms.Type][:len(lb.msInfo[ms.Type])-1] //remove ms from list if connection failed
+				break
 			}
-			lb.msInfo[ms.Type] = lb.msInfo[ms.Type][:len(lb.msInfo[ms.Type])-1] //remove ms from list if connection failed
-			break
-		}
 
-		fmt.Printf("[LBALANCER]: Successfully added ms %s:%s type:%s\n", ms.Host, ms.Port, ms.Type)
+			fmt.Printf("[LBALANCER]: Successfully added ms %s:%s type:%s\n", ms.Host, ms.Port, ms.Type)
 
-		response = protocol.Message{ID: request.ID, Type: request.Type, Code: protocol.SUCCESS}
+			response = protocol.Message{ID: request.ID, Type: request.Type, Code: protocol.SUCCESS}
 
-	case protocol.HEARTBEAT:
-		log["console"].Debug("Received heartbeat message")
-		response = protocol.Message{ID: request.ID, Type: request.Type, Code: protocol.SUCCESS}
+		case protocol.HEARTBEAT:
+			log["console"].Debug("Received heartbeat message")
+			response = protocol.Message{ID: request.ID, Type: request.Type, Code: protocol.SUCCESS}
 
-	//microservice operations
-	case protocol.PING:
-		fallthrough
-	case protocol.DOWNLOAD:
-		fallthrough
-	case protocol.UPLOAD:
-		//forward message to microservice
-		var msType string
-		msType = strings.ToLower(string(request.Type))
+		//microservice operations
+		case protocol.PING:
+			fallthrough
+		case protocol.DOWNLOAD:
+			fallthrough
+		case protocol.UPLOAD:
+			//forward message to microservice
+			var msType string
+			msType = strings.ToLower(string(request.Type))
 
-		//take first ms with this type
-		services := lb.msInfo[msType]
+			//take first ms with this type
+			services := lb.msInfo[msType]
 
-		if len(services) < 1 {
-			log["console"].Error("no services with type %s available", msType)
-			response = protocol.Message{
-				ID:           request.ID,
-				Type:         request.Type,
-				ConnectionID: request.ConnectionID,
-				Code:         protocol.ERROR,
-				Content:      "no services available",
+			if len(services) < 1 {
+				log["console"].Error("no services with type %s available", msType)
+				response = protocol.Message{
+					ID:           request.ID,
+					Type:         request.Type,
+					ConnectionID: request.ConnectionID,
+					Code:         protocol.ERROR,
+					Content:      "no services available",
+				}
+				break
 			}
-			break
-		}
 
-		ms := services[0]
+			ms := services[0]
 
-		msConn := lb.msConn[ms.ID]
+			msConn := lb.msConn[ms.ID]
 
-		if msConn == nil {
+			if msConn == nil {
+				response = protocol.Message{
+					ID:           request.ID,
+					Type:         request.Type,
+					Code:         protocol.ERROR,
+					ConnectionID: request.ConnectionID,
+					Content:      "Connection for ms is nil",
+				}
+			}
+
+			response, err = msConn.SendRequest(request)
+			if err != nil {
+				response = protocol.Message{
+					ID:           request.ID,
+					Type:         request.Type,
+					Code:         protocol.ERROR,
+					ConnectionID: request.ConnectionID,
+					Content:      err.Error(),
+				}
+			}
+
+			log["console"].Debug("response from ms: %s", response)
+
+		default:
 			response = protocol.Message{
-				ID:           request.ID,
-				Type:         request.Type,
-				Code:         protocol.ERROR,
-				ConnectionID: request.ConnectionID,
-				Content:      "Connection for ms is nil",
+				ID: request.ID, Type: protocol.CREATE, Code: protocol.ERROR, Content: "unknown command: " + string(request.Type),
 			}
 		}
 
-		protocol.Send(msConn.RW.Writer, request)
+		response.ID = request.ID
 
-		response, err = protocol.Receive(msConn.RW.Reader)
-		if err != nil {
-			response = protocol.Message{
-				ID:           request.ID,
-				Type:         request.Type,
-				Code:         protocol.ERROR,
-				ConnectionID: request.ConnectionID,
-				Content:      err.Error(),
-			}
+		if err := protocol.Send(conn.RW.Writer, response); err != nil {
+			log["console"].Error("Error sending response: %w", err)
+			return
 		}
 
-		log["console"].Debug("response from ms: %s", response)
-
-	default:
-		response = protocol.Message{
-			ID: request.ID, Type: protocol.CREATE, Code: protocol.ERROR, Content: "unknown command: " + string(request.Type),
-		}
-	}
-
-	if err := protocol.Send(conn.RW.Writer, response); err != nil {
-		log["console"].Error("Error sending response: %w", err)
-		return
 	}
 }
 
@@ -239,9 +234,29 @@ func (lb *LoadBalancer) connectToMicroservice(ms *protocol.MsInfo) error {
 				lb.msConn[ms.ID] = conn
 				lb.RWmu.Unlock()
 
+				go conn.ReceiveLoop(lb)
+
 				log["console"].Info("Connected to microservice: %s", address)
 				return nil
 			}
 		}
 	}
 }
+
+// ################################# NODE METHODS #################################
+
+func (lb *LoadBalancer) HandleHeartBeat(msg protocol.Message) {
+
+}
+
+func (lb *LoadBalancer) NodeAsyncEvent(request protocol.Message, conn *protocol.Connection) {
+
+	switch request.Type {
+
+	default:
+		log["console"].Error("Unsupported NodeAsyncEvent type: %s", request.Type)
+	}
+
+}
+
+// ################################# NODE METHODS #################################

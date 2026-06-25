@@ -2,6 +2,7 @@ package microservice
 
 import (
 	"bufio"
+	"fmt"
 	"net"
 	"networking/tcp/internal/logger"
 	"networking/tcp/internal/protocol"
@@ -73,15 +74,33 @@ func (ms *Microservice) pingService(conn net.Conn) {
 
 		log["console"].Debug("received request: %s", request)
 
-		curr_time := time.Now()
+		var response protocol.Message
 
-		response := protocol.Message{
-			ID:           request.ID,
-			SessionID:    request.SessionID,
-			ConnectionID: request.ConnectionID,
-			Type:         request.Type,
-			Code:         protocol.SUCCESS,
-			Content:      curr_time.Format("2006-01-02 15:04:05"),
+		if strings.ToLower(string(request.Type)) != "ping" {
+			errStr := fmt.Sprintf("Wrong request message %v", request.Type)
+
+			log["console"].Error(errStr)
+
+			response = protocol.Message{
+				ID:           request.ID,
+				SessionID:    request.SessionID,
+				ConnectionID: request.ConnectionID,
+				Type:         request.Type,
+				Code:         protocol.ERROR,
+				Content:      errStr,
+			}
+
+		} else {
+			curr_time := time.Now()
+
+			response = protocol.Message{
+				ID:           request.ID,
+				SessionID:    request.SessionID,
+				ConnectionID: request.ConnectionID,
+				Type:         request.Type,
+				Code:         protocol.SUCCESS,
+				Content:      curr_time.Format("2006-01-02 15:04:05"),
+			}
 		}
 
 		err = protocol.Send(writer, response)

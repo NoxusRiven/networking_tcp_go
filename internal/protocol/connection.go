@@ -93,6 +93,10 @@ func (c *Connection) SendRequest(msg Message) (Message, error) {
 	case resp := <-ch:
 		return resp, nil
 	case <-time.After(5 * time.Second):
+		c.mu.Lock()
+		delete(c.pending, msg.ID)
+		c.mu.Unlock()
+
 		return Message{}, fmt.Errorf("timeout")
 	}
 }

@@ -20,14 +20,14 @@ var log = logger.NewLoggers(
 )
 
 /**
-*TODO: make api directly connect to lbs and do inteligent loadbalancing loadbalancers (prolly by load)
+*TODO: make api do inteligent loadbalancing loadbalancers (prolly by load)
  */
 
 const (
 	CONNECTION_NUM = 4
 )
 
-// -------------------- STRUCTURES -----------------------
+// ##################################### STRUCTURES #####################################
 
 type controllerRequest struct {
 	data     protocol.Message
@@ -53,9 +53,9 @@ type APIGateway struct {
 	requestChannelMap map[string]chan MessagePool
 }
 
-// -------------------- STRUCTURES -----------------------
+// ##################################### STRUCTURES #####################################
 
-// -------------------- FUNCTIONS -----------------------
+// ################################## FUNCTIONS #####################################
 
 func NewAPIGateway(port uint32) (*APIGateway, error) {
 	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
@@ -169,18 +169,14 @@ func (api *APIGateway) syncLoadBalancers(msg protocol.Message) error {
 
 			conn := protocol.NewConnection(nc)
 
-			//test if every connection works
-			protocol.Send(conn.RW.Writer, protocol.Message{
-				Type: protocol.HEARTBEAT,
-			})
+			go conn.ReceiveLoop(api)
 
 			//? maybe if conn to lb isnt working return and mark it as unhealty, and dont check other connection (also send info to controller about it)
-			resp, err := protocol.Receive(conn.RW.Reader)
-			if err != nil {
-				log["console"].Error("Error receiving response from loadbalancer %s:%s on %s connID, error: %v", lb.Host, lb.Port, conn.ID, err)
 
-				continue
-			}
+			//test if every connection works
+			resp, err := conn.SendRequest(protocol.Message{
+				Type: protocol.HEARTBEAT,
+			})
 			if resp.Code != protocol.SUCCESS {
 				log["console"].Error("Loadbalancer %s:%s responsed with error code %d to heartbeat on %s connID, response: %v", lb.Host, lb.Port, resp.Code, conn.ID, resp)
 				continue
@@ -213,9 +209,8 @@ func (api *APIGateway) messageWorker(conn *protocol.Connection) {
 	for pool := range api.requestChannelMap[lb.ID] {
 		req := pool.data
 		log["console"].Debug("Message worker got request: %v", req)
-		protocol.Send(conn.RW.Writer, req)
 
-		resp, err := protocol.Receive(conn.RW.Reader)
+		resp, err := conn.SendRequest(req)
 		if err != nil {
 			log["console"].Error("Error receiving response from loadbalancer on %s connID, error: %v", conn.ID, err)
 			continue
@@ -258,6 +253,8 @@ func (api *APIGateway) handleClient(cliConn *protocol.Connection) {
 
 		response := <-reqPool.response
 
+		response.ID = request.ID
+
 		err = protocol.Send(cliConn.RW.Writer, response)
 		if err != nil {
 			log["console"].Error("Error while sending response to client: %v", err)
@@ -272,6 +269,8 @@ func (api *APIGateway) handleClient(cliConn *protocol.Connection) {
 func (api *APIGateway) findLbForRequest(request protocol.Message) *protocol.LBalancerInfo {
 	//TODO: later make better logic for choosing lb
 
+
+	log["console"].Debug("Request type str: %v", string(request.Type))
 	var lb *protocol.LBalancerInfo
 	for _, lbInf := range api.lbInfo {
 		if _, ok := lbInf.Microservices[string(request.Type)]; ok {
@@ -279,6 +278,9 @@ func (api *APIGateway) findLbForRequest(request protocol.Message) *protocol.LBal
 			break
 		}
 	}
+
+
+	log["console"].Debug("Found lb :%v", lb)
 
 	//TODO: fix parsing new loadbalancer and fix communicating to it ping message
 	if lb == nil {
@@ -316,63 +318,17 @@ func (api *APIGateway) findLbForRequest(request protocol.Message) *protocol.LBal
 		lbconn := api.lbConn[lbUpdate.ID][0]
 		lbfound := api.lbInfo[lbconn.ID]
 
+
+		log["console"].Debug("lb microservices: %v", lbUpdate.Microservices)
+
 		*lbfound = *lbUpdate
 		lb = lbfound
 	}
 
+
 	return lb
 
 }
-
-// func (api *APIGateway) handleClient(client *protocol.Connection) {
-// 	defer client.Close()
-
-// 	//TODO: change logic to use connection send and receive loop to comunicate with clients
-
-// 	sessionID := crypto.GenerateID(crypto.INSTANCE_NODE)
-
-// 	for {
-// 		line, err := reader.ReadBytes('\n')
-// 		if err != nil {
-// 			return
-// 		}
-
-// 		var request protocol.Message
-
-// 		err = json.Unmarshal(line, &request)
-// 		if err != nil {
-// 			fmt.Println("Invalid JSON:", err)
-// 			continue
-// 		}
-
-// 		request.SessionID = sessionID
-
-// 		respChan := make(chan protocol.Message)
-
-// 		// sent request to worker
-// 		api.controllerRequestChannel <- controllerRequest{
-// 			data:     request,
-// 			response: respChan,
-// 		}
-
-// 		// wait for response
-// 		response := <-respChan
-
-// 		respBytes, err := json.Marshal(response)
-// 		if err != nil {
-// 			fmt.Println("JSON encode error:", err)
-// 			continue
-// 		}
-
-// 		respBytes = append(respBytes, '\n')
-
-// 		_, err = writer.Write(respBytes)
-// 		if err != nil {
-// 			return
-// 		}
-// 		writer.Flush()
-// 	}
-// }
 
 func (api *APIGateway) HandleHeartBeat(msg protocol.Message) {
 
@@ -388,4 +344,4 @@ func (api *APIGateway) NodeAsyncEvent(msg protocol.Message, conn *protocol.Conne
 	}
 }
 
-// -------------------- FUNCTIONS -----------------------
+// ##################################### FUNCTIONS #####################################

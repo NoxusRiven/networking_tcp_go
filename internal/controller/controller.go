@@ -41,7 +41,6 @@ const (
 
 // ##################################### STRUCTURES #####################################
 
-// TODO: controller doesnt get client requests, only in edege cases api will send requests to controller
 // TODO: controller should update "lastHeartBeat" of nodes when they send hearthbeat and with every interaction
 // TODO: only add second connection and use it when working with files
 // TODO: if agent is in the same host as controller he can choose ports otherwise controller sets boundry or just a free port and agents sends back wich port he got in remote host
@@ -135,45 +134,8 @@ func (c *Controller) Remove(conn *protocol.Connection, connType protocol.Connect
 		delete(c.agentsConn, conn.ID)
 
 	case protocol.ConnLB:
-		//TODO: fix deleting one conn from lbconn
 		delete(c.lbConn, conn.ID)
 	}
-}
-
-// ! not used function might have errors or isnt even needed
-// func (c *Controller) runHeartbeatChecker() {
-// 	ticker := time.NewTicker(HeartbeatCheckPeriod)
-// 	defer ticker.Stop()
-
-// 	for range ticker.C {
-// 		now := time.Now()
-// 		var stale []string
-
-// 		c.mu.RLock()
-// 		for id, info := range c.agentsInfo {
-// 			//only check agents that are connected to controller
-// 			//if info.Conn != nil {
-// 			continue
-// 			//}
-// 			info.Mu.RLock()
-// 			last := info.LastHeartbeat
-// 			info.Mu.RUnlock()
-// 			if now.Sub(last) > HeartbeatTimeout {
-// 				stale = append(stale, id)
-// 			}
-// 		}
-// 		c.mu.RUnlock()
-
-// 		for _, id := range stale {
-// 			c.onAgentTimeout(id)
-// 		}
-// 	}
-// }
-
-// performDeepCheck runs additional safety checks when agent times out.
-// Expand with: cleanup microservice refs, notify load balancers, metrics, etc.
-func (c *Controller) performDeepCheck(agentID string) {
-	log["console"].Debug("[DEEP CHECK] Agent %s removed — microservices and LBs may need rebalancing\n", agentID)
 }
 
 func (c *Controller) createNewMessageNode(agentPort string, lbPort string) (*protocol.AgentInfo, *protocol.LBalancerInfo, error) {
@@ -237,7 +199,8 @@ func (c *Controller) NodeAsyncEvent(msg protocol.Message, conn *protocol.Connect
 			}
 		}
 
-		protocol.Send(conn.RW.Writer, response)
+		//! Propably dont use GO but catch error if happend
+		go protocol.Send(conn.RW.Writer, response)
 	default:
 		log["console"].Error("Unsupported NodeAsyncEvent type: %s", msg.Type)
 	}
@@ -327,19 +290,6 @@ send:
 	if err != nil {
 		log["console"].Error("Error sending response to api: %v", err)
 	}
-
-	//TODO: this part will be in loadbalancer
-	// for {
-	// 	req, err := protocol.Receive(conn.RW.Reader)
-	// 	if err != nil {
-	// 		log["console"].Info("Disconected: %v", err)
-	// 		return
-	// 	}
-
-	// 	go c.handleAPIRequst(conn, req)
-
-	// }
-
 }
 
 func (c *Controller) handleAPIRequst(conn *protocol.Connection, msg protocol.Message) {
@@ -570,18 +520,6 @@ func (c *Controller) onAgentTimeout(agentID string) {
 		conn.Close()
 		c.Remove(conn, protocol.ConnAgent)
 	}
-
-	// Deep checking / cleanup (expand as needed)
-	c.performDeepCheck(agentID)
-}
-
-// ? may need this func if program expands
-func (c *Controller) handleAgentDisconnect(agentID string) {
-
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	log["console"].Info("Agent removed: %s", agentID)
 }
 
 // ################################# AGENT FUNCTIONS ###################################
@@ -774,8 +712,10 @@ func (c *Controller) createNewService(serviceType string) (*protocol.MsInfo, *pr
 
 	log["console"].Debug("LB response after getting ms data: %v", response)
 
+	// add new instance to ms and lb.ms maps
 	c.mu.Lock()
 	c.microservices[serviceType] = append(c.microservices[serviceType], ms)
+	c.lbInfo[lbConn.ID].Microservices[serviceType] = append(c.lbInfo[lbConn.ID].Microservices[serviceType], ms)
 	c.mu.Unlock()
 
 	return ms, lb, nil

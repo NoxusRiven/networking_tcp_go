@@ -2,7 +2,6 @@ package client
 
 import (
 	"bufio"
-	"encoding/json"
 	"fmt"
 	"net"
 	"networking/tcp/internal/protocol"
@@ -12,10 +11,8 @@ import (
 
 // -------------------- STRUCTURES -----------------------
 type CLI struct {
-	conn      net.Conn
+	conn      *protocol.Connection
 	isRunning bool
-	reader    *bufio.Reader
-	writer    *bufio.Writer
 }
 
 // -------------------- FUNCTIONS -----------------------
@@ -27,13 +24,16 @@ func NewCLI() *CLI {
 
 // Run connects to API Gateway
 func (c *CLI) Run(host string, port string) error {
-	conn, err := net.Dial("tcp", net.JoinHostPort(host, port))
+	nc, err := net.Dial("tcp", net.JoinHostPort(host, port))
 	if err != nil {
 		return err
 	}
-	c.conn = conn
-	c.reader = bufio.NewReader(conn)
-	c.writer = bufio.NewWriter(conn)
+
+	c.conn = protocol.NewConnection(nc)
+	defer c.conn.Close()
+
+	go c.conn.ReceiveLoop(c)
+
 	c.isRunning = true
 
 	for c.isRunning {
@@ -71,20 +71,16 @@ func readUserInput(prompt string) string {
 	return strings.TrimSpace(text)
 }
 
-// -------------------- MESSAGE HANDLERS -----------------------
+// ################################ MESSAGE HANDLERS ################################
 func (c *CLI) HandlePing() {
 	msg := protocol.Message{
 		Type: "PING",
 	}
 
-	if err := c.SendMessage(msg); err != nil {
-		fmt.Println("Send error:", err)
-		return
-	}
-
-	resp, err := c.ReceiveMessage()
+	resp, err := c.conn.SendRequest(msg)
 	if err != nil {
-		fmt.Println("Receive error:", err)
+		fmt.Println("[ERROR]: Error while seding message to API", err)
+
 		return
 	}
 
@@ -98,34 +94,23 @@ func (c *CLI) HandleExit() {
 	msg := protocol.Message{
 		Type: "EXIT",
 	}
-	_ = c.SendMessage(msg)
-	c.conn.Close()
+
+	//ignoring error because client is exiting
+	_ = protocol.Send(c.conn.RW.Writer, msg)
 }
 
-// -------------------- JSON SEND/RECEIVE -----------------------
-func (c *CLI) SendMessage(msg protocol.Message) error {
-	data, err := json.Marshal(msg)
-	if err != nil {
-		return err
-	}
-	data = append(data, '\n') // delimiter
-	_, err = c.writer.Write(data)
-	if err != nil {
-		return err
-	}
-	return c.writer.Flush()
+// ################################ MESSAGE HANDLERS ################################
+
+// ################################ NODE METHODS ################################
+
+func (c *CLI) HandleHeartBeat(msg protocol.Message) {
+	// client doesnt get heartbeat checks
 }
 
-func (c *CLI) ReceiveMessage() (protocol.Message, error) {
-	line, err := c.reader.ReadString('\n')
-	if err != nil {
-		return protocol.Message{}, err
-	}
+func (c *CLI) NodeAsyncEvent(msg protocol.Message, conn *protocol.Connection) {
+	// client always should be pending for messages so if any message is directed here it is a bug
 
-	var msg protocol.Message
-	if err := json.Unmarshal([]byte(line), &msg); err != nil {
-		return protocol.Message{}, err
-	}
-
-	return msg, nil
+	fmt.Println("[ERROR]: Incorrect behaviour! Client received message '", msg, "' in NodeAsyncEvent() even though CLI always expects response.")
 }
+
+// ################################ NODE METHODS ################################
