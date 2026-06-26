@@ -6,6 +6,7 @@ import (
 	crypto "networking/tcp/internal/cryptography"
 	"networking/tcp/internal/logger"
 	"networking/tcp/internal/protocol"
+	"networking/tcp/internal/platform"
 	"os"
 	"os/exec"
 	"sync"
@@ -350,7 +351,10 @@ func (c *Controller) GetNextAgentID() uint32 {
 func (c *Controller) createNewAgent(port string) (*protocol.AgentInfo, error) {
 	id := fmt.Sprintf("%d", c.GetNextAgentID())
 
-	cmd := exec.Command("../../cmd/agent/agent.exe", "--port", port)
+	cmd := exec.Command(
+		platform.Executable("agent"), 
+		"--port", port,
+	)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
@@ -528,7 +532,10 @@ func (c *Controller) onAgentTimeout(agentID string) {
 func (c *Controller) createNewLoadBalancer(port string) (*protocol.LBalancerInfo, error) {
 	id := fmt.Sprintf("%d", c.GetNextAgentID())
 
-	cmd := exec.Command("../../cmd/loadbalancer/lb.exe", "--port", port)
+	cmd := exec.Command(
+		platform.Executable("lb"),
+		 "--port", port,
+	)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 

@@ -5,6 +5,7 @@ import (
 	"net"
 	"networking/tcp/internal/logger"
 	"networking/tcp/internal/protocol"
+	"networking/tcp/internal/platform"
 	"os"
 	"os/exec"
 	"sync"
@@ -85,7 +86,11 @@ func (a *Agent) GetNextPort() string {
 func (a *Agent) createMicroservice(host string, port string, ms_type string) (*protocol.MsInfo, error) {
 
 	//Correct exec Command
-	cmd := exec.Command("../../cmd/microservice/service.exe", "--port", port, "--type", ms_type)
+	cmd := exec.Command(
+		platform.Executable("service"), 
+		"--port", port, 
+		"--type", ms_type,
+	)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
