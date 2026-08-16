@@ -1,6 +1,6 @@
 *.exe
 *.txt
 
-/tcp/bin/
+/bin/
 
-/tcp/cmd/test/
+/cmd/test/

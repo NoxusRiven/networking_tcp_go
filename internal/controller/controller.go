@@ -5,8 +5,8 @@ import (
 	"net"
 	crypto "networking/tcp/internal/cryptography"
 	"networking/tcp/internal/logger"
-	"networking/tcp/internal/protocol"
 	"networking/tcp/internal/platform"
+	"networking/tcp/internal/protocol"
 	"os"
 	"os/exec"
 	"sync"
@@ -352,7 +352,7 @@ func (c *Controller) createNewAgent(port string) (*protocol.AgentInfo, error) {
 	id := fmt.Sprintf("%d", c.GetNextAgentID())
 
 	cmd := exec.Command(
-		platform.Executable("agent"), 
+		platform.Executable("agent"),
 		"--port", port,
 	)
 	cmd.Stdout = os.Stdout
@@ -534,7 +534,7 @@ func (c *Controller) createNewLoadBalancer(port string) (*protocol.LBalancerInfo
 
 	cmd := exec.Command(
 		platform.Executable("lb"),
-		 "--port", port,
+		"--port", port,
 	)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

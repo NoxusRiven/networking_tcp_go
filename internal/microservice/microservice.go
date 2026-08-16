@@ -1,14 +1,10 @@
 package microservice
 
 import (
-	"bufio"
-	"fmt"
 	"net"
 	"networking/tcp/internal/logger"
-	"networking/tcp/internal/protocol"
 	"os"
 	"strings"
-	"time"
 )
 
 var log logger.Loggers = logger.NewLoggers(
@@ -21,6 +17,7 @@ var log logger.Loggers = logger.NewLoggers(
 
 type Microservice struct {
 	listener net.Listener
+	Service  Service
 }
 
 func NewMicroservice(listenerPort string) (*Microservice, error) {
@@ -31,25 +28,26 @@ func NewMicroservice(listenerPort string) (*Microservice, error) {
 
 	return &Microservice{
 		listener: listen,
+		Service:  nil,
 	}, nil
 }
 
 func (ms *Microservice) Start(serviceType string) {
-	log["console"].Info("service %s started on %s\n", serviceType, ms.listener.Addr())
-
 	serviceType = strings.ToLower(serviceType)
 
-	switch serviceType {
-	case "ping":
-		ms.acceptConnections(ms.pingService)
-	default:
-		log["console"].Error("unknow service type %s", serviceType)
+	if ms.Service == nil {
+		log["console"].Error("Unknow service %v\nMicroservice Service field has to be set in main", serviceType)
+		return
 	}
+
+	log["console"].Info("service %s started on %s\n", serviceType, ms.listener.Addr())
+
+	ms.acceptConnections()
 }
 
-func (ms *Microservice) acceptConnections(serviceFunc func(conn net.Conn)) {
+func (ms *Microservice) acceptConnections() {
 	for {
-		conn, err := ms.listener.Accept()
+		nc, err := ms.listener.Accept()
 		if err != nil {
 			log["console"].Error("accepting connection error %w", err)
 			return
@@ -57,60 +55,6 @@ func (ms *Microservice) acceptConnections(serviceFunc func(conn net.Conn)) {
 
 		log["console"].Info("accepted connection")
 
-		go serviceFunc(conn)
+		ms.Service.Work(nc)
 	}
-}
-
-func (ms *Microservice) pingService(conn net.Conn) {
-	reader := bufio.NewReader(conn)
-	writer := bufio.NewWriter(conn)
-
-	for {
-		request, err := protocol.Receive(reader)
-		if err != nil {
-			log["console"].Error("reading request error %w", err)
-			return
-		}
-
-		log["console"].Debug("received request: %s", request)
-
-		var response protocol.Message
-
-		if strings.ToLower(string(request.Type)) != "ping" {
-			errStr := fmt.Sprintf("Wrong request message %v", request.Type)
-
-			log["console"].Error(errStr)
-
-			response = protocol.Message{
-				ID:           request.ID,
-				SessionID:    request.SessionID,
-				ConnectionID: request.ConnectionID,
-				Type:         request.Type,
-				Code:         protocol.ERROR,
-				Content:      errStr,
-			}
-
-		} else {
-			curr_time := time.Now()
-
-			response = protocol.Message{
-				ID:           request.ID,
-				SessionID:    request.SessionID,
-				ConnectionID: request.ConnectionID,
-				Type:         request.Type,
-				Code:         protocol.SUCCESS,
-				Content:      curr_time.Format("2006-01-02 15:04:05"),
-			}
-		}
-
-		err = protocol.Send(writer, response)
-		if err != nil {
-			log["console"].Error("sending response error %w", err)
-			return
-		}
-	}
-}
-
-func (ms *Microservice) loginService() {
-
 }

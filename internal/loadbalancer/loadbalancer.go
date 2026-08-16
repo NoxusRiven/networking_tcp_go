@@ -102,7 +102,7 @@ func (lb *LoadBalancer) handleConnection(nc net.Conn) {
 				break
 			}
 
-			fmt.Printf("[LBALANCER]: Successfully added ms %s:%s type:%s\n", ms.Host, ms.Port, ms.Type)
+			log["console"].Debug("Successfully added ms %v:%v type:%v\n", ms.Host, ms.Port, ms.Type)
 
 			response = protocol.Message{ID: request.ID, Type: request.Type, Code: protocol.SUCCESS}
 
@@ -186,7 +186,7 @@ func parseMsFromMessage(msg protocol.Message) (*protocol.MsInfo, error) {
 		return nil, err
 	}
 
-	fmt.Printf("[LBALANCER]: message content %s\n", msg.Content)
+	log["console"].Debug("message content %v\n", msg.Content)
 
 	dataSplit := strings.Split(msg.Content.(string), ";")
 
@@ -198,7 +198,7 @@ func parseMsFromMessage(msg protocol.Message) (*protocol.MsInfo, error) {
 		return nil, err
 	}
 
-	fmt.Printf("Created ms (%s %s %s %s %s)", dataSplit[0], dataSplit[1], dataSplit[2], dataSplit[3], dataSplit[4])
+	log["console"].Debug("Created ms (%v %v %v %v %v)", dataSplit[0], dataSplit[1], dataSplit[2], dataSplit[3], dataSplit[4])
 
 	return &protocol.MsInfo{
 		ID:     dataSplit[0],
