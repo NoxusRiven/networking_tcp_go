@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"net"
 	"networking/tcp/internal/logger"
-	"networking/tcp/internal/protocol"
 	"networking/tcp/internal/platform"
+	"networking/tcp/internal/protocol"
 	"os"
 	"os/exec"
 	"sync"
@@ -36,6 +36,8 @@ type Agent struct {
 	//adding to base port number for ms
 	nextPortCount uint16
 }
+
+//TODO!: for some reason api isnt pending on PING
 
 // TODO: handle getting free port and communicating it to controller
 func NewAgent(lisPort string) (*Agent, error) {
@@ -87,8 +89,8 @@ func (a *Agent) createMicroservice(host string, port string, ms_type string) (*p
 
 	//Correct exec Command
 	cmd := exec.Command(
-		platform.Executable("service"), 
-		"--port", port, 
+		platform.Executable("service"),
+		"--port", port,
 		"--type", ms_type,
 	)
 	cmd.Stdout = os.Stdout
@@ -107,7 +109,7 @@ func (a *Agent) createMicroservice(host string, port string, ms_type string) (*p
 	ms := &protocol.MsInfo{
 		Host: host,
 		Port: port,
-		Type: ms_type,
+		Type: protocol.ServiceType(ms_type),
 	}
 
 	// TODO: healthCheck(ms) when microservice implements it

@@ -55,6 +55,7 @@ func (ms *Microservice) acceptConnections() {
 
 		log["console"].Info("accepted connection")
 
-		ms.Service.Work(nc)
+		//use go rutine to handle every connection async
+		go ms.Service.Work(nc)
 	}
 }

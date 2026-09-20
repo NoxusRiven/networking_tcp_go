@@ -32,7 +32,7 @@ func (c *CLI) Run(host string, port string) error {
 	c.conn = protocol.NewConnection(nc)
 	defer c.conn.Close()
 
-	go c.conn.ReceiveLoop(c)
+	go c.conn.ReceiveLoopNew(c)
 
 	c.isRunning = true
 
@@ -41,7 +41,8 @@ func (c *CLI) Run(host string, port string) error {
 			"Hello! What would you like to do?\n" +
 				"(Select number below):\n" +
 				"1. Ping Server\n" +
-				"2. Post Message (not implemented)\n" +
+				"2. Do Idle Work\n" +
+				"3. Post Message (not implemented)\n" +
 				"0. Exit program",
 		)
 
@@ -51,6 +52,9 @@ func (c *CLI) Run(host string, port string) error {
 		case "1":
 			c.HandlePing()
 		case "2":
+			//TODO: maybe use go to use cli while streaming happens
+			c.HandleIdle()
+		case "3":
 			fmt.Println("Not implemented. Yet...")
 		case "0":
 			c.HandleExit()
@@ -77,16 +81,37 @@ func (c *CLI) HandlePing() {
 		Type: "PING",
 	}
 
-	resp, err := c.conn.SendRequest(msg)
+	respChan, err := c.conn.SendRequestNew(msg)
 	if err != nil {
 		fmt.Println("[ERROR]: Error while seding message to API", err)
 
 		return
 	}
 
+	resp := <-respChan
+
 	fmt.Println("[DEBUG]: Server Full Response:", resp)
 
 	fmt.Println("[SERVER]:", resp.Content)
+}
+
+func (c *CLI) HandleIdle() {
+	msg := protocol.Message{
+		Type: "IDLE",
+	}
+
+	respChan, err := c.conn.SendRequestNew(msg)
+	if err != nil {
+		fmt.Println("[ERROR]: Problem accured when SendRequestNew returned channel:", err)
+
+	}
+
+	for resp := range respChan {
+		//resp := c.conn.ReceiveRequestNew(msg)
+		fmt.Println("[HandleIdle]: response from API: ", resp)
+	}
+
+	fmt.Println("[INFO]: Idle has ended!")
 }
 
 func (c *CLI) HandleExit() {

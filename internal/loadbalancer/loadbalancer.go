@@ -21,8 +21,10 @@ var log logger.Loggers = logger.NewLoggers(
 )
 
 type LoadBalancer struct {
-	msInfo map[string][]*protocol.MsInfo
+	msInfo map[protocol.ServiceType][]*protocol.MsInfo
 	msConn map[string]*protocol.Connection
+
+	apiConn map[string]*protocol.Connection
 
 	listener net.Listener
 
@@ -37,8 +39,9 @@ func NewLoadBalancer(listPort string) (*LoadBalancer, error) {
 
 	return &LoadBalancer{
 		listener: listen,
-		msInfo:   make(map[string][]*protocol.MsInfo),
+		msInfo:   make(map[protocol.ServiceType][]*protocol.MsInfo),
 		msConn:   make(map[string]*protocol.Connection),
+		apiConn:  make(map[string]*protocol.Connection),
 	}, nil
 }
 
@@ -61,7 +64,15 @@ func (lb *LoadBalancer) Start() {
 
 func (lb *LoadBalancer) handleConnection(nc net.Conn) {
 	conn := protocol.NewConnection(nc)
+
+	//lb.RWmu.Lock()
+	lb.apiConn[conn.ID] = conn
+	//lb.RWmu.Unlock()
+
+	defer delete(lb.apiConn, conn.ID)
 	defer conn.Close()
+
+	//go conn.ReceiveLoopNew(lb)
 
 	for {
 		request, err := protocol.Receive(conn.RW.Reader)
@@ -71,6 +82,7 @@ func (lb *LoadBalancer) handleConnection(nc net.Conn) {
 		}
 
 		var response protocol.Message
+		var respChan <-chan protocol.Message = nil
 
 		switch request.Type {
 		//TODO: later extend this to parsing if update should add, delete or update ms data  (add - add, del - delete, nothing - just update) as a 6th part in msg
@@ -113,12 +125,15 @@ func (lb *LoadBalancer) handleConnection(nc net.Conn) {
 		//microservice operations
 		case protocol.PING:
 			fallthrough
+		case protocol.IDLE:
+			fallthrough
 		case protocol.DOWNLOAD:
 			fallthrough
 		case protocol.UPLOAD:
 			//forward message to microservice
-			var msType string
-			msType = strings.ToLower(string(request.Type))
+			var msType protocol.ServiceType
+
+			msType = protocol.ServiceType(request.Type)
 
 			//take first ms with this type
 			services := lb.msInfo[msType]
@@ -145,11 +160,12 @@ func (lb *LoadBalancer) handleConnection(nc net.Conn) {
 					Type:         request.Type,
 					Code:         protocol.ERROR,
 					ConnectionID: request.ConnectionID,
-					Content:      "Connection for ms is nil",
+					Content:      "Connection to ms is nil",
 				}
 			}
 
-			response, err = msConn.SendRequest(request)
+			respChan, err = msConn.SendRequestNew(request)
+			//response, err = msConn.SendRequest(request)
 			if err != nil {
 				response = protocol.Message{
 					ID:           request.ID,
@@ -160,22 +176,45 @@ func (lb *LoadBalancer) handleConnection(nc net.Conn) {
 				}
 			}
 
-			log["console"].Debug("response from ms: %s", response)
-
 		default:
 			response = protocol.Message{
-				ID: request.ID, Type: protocol.CREATE, Code: protocol.ERROR, Content: "unknown command: " + string(request.Type),
+				ID: request.ID, Type: request.Type, Code: protocol.ERROR, Content: "unknown command: " + string(request.Type),
 			}
 		}
 
-		response.ID = request.ID
+		if respChan == nil {
+			response.ID = request.ID
 
-		if err := protocol.Send(conn.RW.Writer, response); err != nil {
-			log["console"].Error("Error sending response: %w", err)
-			return
+			log["console"].Debug("chan nil, response: %s", response)
+
+			if err := protocol.Send(conn.RW.Writer, response); err != nil {
+				log["console"].Error("Error sending response: %w", err)
+				continue
+			}
+		} else {
+
+			for response := range respChan {
+				response.ID = request.ID
+
+				log["console"].Debug("chan present, response: %v", response)
+
+				if err := protocol.Send(conn.RW.Writer, response); err != nil {
+					log["console"].Error("Error sending response: %w", err)
+					continue
+				}
+			}
 		}
 
 	}
+}
+
+func (lb *LoadBalancer) handleIdle(msg protocol.Message, conn *protocol.Connection) {
+	err := protocol.Send(conn.RW.Writer, msg)
+	if err != nil {
+		log["console"].Error("%v", err)
+	}
+
+	log["console"].Info("Sent Idle message")
 }
 
 func parseMsFromMessage(msg protocol.Message) (*protocol.MsInfo, error) {
@@ -186,7 +225,7 @@ func parseMsFromMessage(msg protocol.Message) (*protocol.MsInfo, error) {
 		return nil, err
 	}
 
-	log["console"].Debug("message content %v\n", msg.Content)
+	log["console"].Debug("message:  %v\n", msg)
 
 	dataSplit := strings.Split(msg.Content.(string), ";")
 
@@ -205,7 +244,7 @@ func parseMsFromMessage(msg protocol.Message) (*protocol.MsInfo, error) {
 		Host:   dataSplit[1],
 		Port:   dataSplit[2],
 		NodeID: dataSplit[3],
-		Type:   strings.ToLower(dataSplit[4]),
+		Type:   protocol.ServiceType(dataSplit[4]),
 	}, nil
 }
 
@@ -234,7 +273,8 @@ func (lb *LoadBalancer) connectToMicroservice(ms *protocol.MsInfo) error {
 				lb.msConn[ms.ID] = conn
 				lb.RWmu.Unlock()
 
-				go conn.ReceiveLoop(lb)
+				//go conn.ReceiveLoopNew(lb)
+				go conn.ReceiveLoopNew(lb)
 
 				log["console"].Info("Connected to microservice: %s", address)
 				return nil
@@ -252,7 +292,8 @@ func (lb *LoadBalancer) HandleHeartBeat(msg protocol.Message) {
 func (lb *LoadBalancer) NodeAsyncEvent(request protocol.Message, conn *protocol.Connection) {
 
 	switch request.Type {
-
+	// case protocol.IDLE:
+	// 	lb.handleIdle(request, conn)
 	default:
 		log["console"].Error("Unsupported NodeAsyncEvent type: %s", request.Type)
 	}

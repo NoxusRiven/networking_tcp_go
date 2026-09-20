@@ -3,8 +3,8 @@ package protocol
 import (
 	"bufio"
 	"encoding/json"
-	"fmt"
-	"strings"
+	//"fmt"
+	//"strings"
 )
 
 /*
@@ -16,6 +16,7 @@ type MessageType string
 const (
 	// client
 	PING     MessageType = "PING"
+	IDLE     MessageType = "IDLE"
 	EXIT     MessageType = "EXIT"
 	UPLOAD   MessageType = "FILE_UPLOAD"
 	DOWNLOAD MessageType = "FILE_DOWNLOAD"
@@ -48,32 +49,34 @@ const (
 	ERROR   CodeType = 400
 )
 
+// TODO: add connection type (stream, non-stream itp) and fix shutting of channels
 type Message struct {
 	ID           string      `json:"ID,omitempty"`
 	SessionID    string      `json:"sessionID,omitempty"`
 	ConnectionID string      `json:"connectionID,omitempty"`
 	Type         MessageType `json:"type"`
+	IsStream     bool        `json:"isStream,omitempty"`
 	Code         CodeType    `json:"code,omitempty"`
 	Content      any         `json:"content,omitempty"`
 }
 
-func (m Message) String() string {
+// func (m Message) String() string {
 
-	parts := []string{
-		fmt.Sprintf("ID=%s", m.ID),
-		fmt.Sprintf("Type=%v", m.Type),
-	}
+// 	parts := []string{
+// 		fmt.Sprintf("ID=%s", m.ID),
+// 		fmt.Sprintf("Type=%v", m.Type),
+// 	}
 
-	if m.Code != 0 {
-		parts = append(parts, fmt.Sprintf("Code=%v", m.Code))
-	}
+// 	if m.Code != 0 {
+// 		parts = append(parts, fmt.Sprintf("Code=%v", m.Code))
+// 	}
 
-	if m.Content != "" {
-		parts = append(parts, fmt.Sprintf("Content=%v", m.Content))
-	}
+// 	if m.Content != "" {
+// 		parts = append(parts, fmt.Sprintf("Content=%v", m.Content))
+// 	}
 
-	return strings.Join(parts, " | ")
-}
+// 	return strings.Join(parts, " | ")
+// }
 
 func Send(writer *bufio.Writer, msg Message) error {
 	raw, err := json.Marshal(msg)

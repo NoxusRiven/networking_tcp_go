@@ -57,7 +57,7 @@ type Controller struct {
 	lbInfo map[string]*protocol.LBalancerInfo
 	lbConn map[string]*protocol.Connection
 
-	microservices map[string][]*protocol.MsInfo
+	microservices map[protocol.ServiceType][]*protocol.MsInfo
 
 	//TODO: store list of available hosts
 
@@ -86,7 +86,7 @@ func NewController() (*Controller, error) {
 		lbInfo: make(map[string]*protocol.LBalancerInfo),
 		lbConn: make(map[string]*protocol.Connection),
 
-		microservices: make(map[string][]*protocol.MsInfo),
+		microservices: make(map[protocol.ServiceType][]*protocol.MsInfo),
 
 		nextID: 0,
 	}, nil
@@ -177,7 +177,7 @@ func (c *Controller) NodeAsyncEvent(msg protocol.Message, conn *protocol.Connect
 	case protocol.CREATE:
 		// api gateway asks controller to create new service based on user request
 		var response protocol.Message
-		_, lb, err := c.createNewService(msg.Content.(string))
+		_, lb, err := c.createNewService(protocol.ServiceType(msg.Content.(string)))
 
 		if err != nil {
 			log["console"].Error("Error creating service: %v", err)
@@ -295,47 +295,28 @@ send:
 
 func (c *Controller) handleAPIRequst(conn *protocol.Connection, msg protocol.Message) {
 
-	//var response protocol.Message
+	ms, err := c.findService(protocol.ServiceType(msg.Type))
 
-	switch msg.Type {
-	case protocol.PING:
-
-		//? later maybe change this arg to protocol.PING
-		ms, err := c.findService("ping")
-
-		if err != nil {
-			response := protocol.Message{
-				Type:    protocol.PING,
-				Code:    protocol.ERROR,
-				Content: err.Error(),
-			}
-
-			protocol.Send(conn.RW.Writer, response)
-
-			return
-		}
-
-		response, err := c.messageService(ms, msg)
-		if err != nil {
-			return
-		}
-
-		log["console"].Debug("response from ms %s", response)
-
-		protocol.Send(conn.RW.Writer, response)
-
-	default:
-
+	if err != nil {
 		response := protocol.Message{
 			Type:    protocol.PING,
 			Code:    protocol.ERROR,
-			Content: "Invalid message type",
+			Content: err.Error(),
 		}
 
 		protocol.Send(conn.RW.Writer, response)
+
+		return
 	}
 
-	//protocol.Send(conn.RW.Writer, response)
+	response, err := c.messageService(ms, msg)
+	if err != nil {
+		return
+	}
+
+	log["console"].Debug("response from ms %s", response)
+
+	protocol.Send(conn.RW.Writer, response)
 }
 
 // #################################  API FUNCTIONS ################################
@@ -372,7 +353,7 @@ func (c *Controller) createNewAgent(port string) (*protocol.AgentInfo, error) {
 		Host:          "localhost",
 		Port:          port,
 		Cmd:           cmd,
-		Microservices: make(map[string][]*protocol.MsInfo),
+		Microservices: make(map[protocol.ServiceType][]*protocol.MsInfo),
 	}
 
 	conn, err := c.connectToAgent(agent)
@@ -553,7 +534,7 @@ func (c *Controller) createNewLoadBalancer(port string) (*protocol.LBalancerInfo
 		Host:          "localhost",
 		Port:          port,
 		Cmd:           cmd,
-		Microservices: make(map[string][]*protocol.MsInfo),
+		Microservices: make(map[protocol.ServiceType][]*protocol.MsInfo),
 	}
 
 	conn, err := c.connectToLB(lb)
@@ -619,7 +600,7 @@ func (c *Controller) handleLBMessage(conn *protocol.Connection, msg protocol.Mes
 // ################################ LOAD BALANCER FUNCTIONS ###################################
 
 // ################################ MICROSERVICE FUNCTIONS ###################################
-func (c *Controller) findService(serviceType string) (*protocol.MsInfo, error) {
+func (c *Controller) findService(serviceType protocol.ServiceType) (*protocol.MsInfo, error) {
 
 	c.mu.RLock()
 	msArr, ok := c.microservices[serviceType]
@@ -633,7 +614,7 @@ func (c *Controller) findService(serviceType string) (*protocol.MsInfo, error) {
 	return ms, err
 }
 
-func (c *Controller) createNewService(serviceType string) (*protocol.MsInfo, *protocol.LBalancerInfo, error) {
+func (c *Controller) createNewService(serviceType protocol.ServiceType) (*protocol.MsInfo, *protocol.LBalancerInfo, error) {
 
 	// Ensure at least one agent exists
 	c.mu.RLock()
@@ -705,7 +686,7 @@ func (c *Controller) createNewService(serviceType string) (*protocol.MsInfo, *pr
 	ms.Type = serviceType
 
 	//inform load balancer about newly created service
-	request = protocol.Message{SessionID: response.SessionID, Type: protocol.UPDATE, Content: string(ms.ID + ";" + ms.Host + ";" + ms.Port + ";" + ms.NodeID + ";" + ms.Type)}
+	request = protocol.Message{SessionID: response.SessionID, Type: protocol.UPDATE, Content: string(ms.ID + ";" + ms.Host + ";" + ms.Port + ";" + ms.NodeID + ";" + string(ms.Type))}
 	response, err = lbConn.SendRequest(request)
 	if err != nil {
 		return nil, nil, logger.StrToError(log["string"], func() {

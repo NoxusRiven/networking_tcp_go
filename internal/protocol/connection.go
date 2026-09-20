@@ -26,7 +26,7 @@ type Connection struct {
 
 	pending map[string]chan Message
 
-	mu sync.Mutex
+	Mu sync.Mutex
 
 	closeOnce sync.Once
 }
@@ -79,24 +79,81 @@ func (c *Connection) SendRequest(msg Message) (Message, error) {
 
 	ch := make(chan Message, 1)
 
-	c.mu.Lock()
+	c.Mu.Lock()
 	c.pending[msg.ID] = ch
 	fmt.Println("[Send Request] started pending on key", msg.ID)
-	c.mu.Unlock()
+	c.Mu.Unlock()
 
-	fmt.Println("[Send request] full message: ", msg)
-	c.mu.Lock()
+	fmt.Println("[Send Request] full message: ", msg)
+	c.Mu.Lock()
 	Send(c.RW.Writer, msg)
-	c.mu.Unlock()
+	c.Mu.Unlock()
 
 	select {
 	case resp := <-ch:
 		return resp, nil
 	case <-time.After(5 * time.Second):
-		c.mu.Lock()
+		c.Mu.Lock()
 		delete(c.pending, msg.ID)
-		c.mu.Unlock()
+		c.Mu.Unlock()
 
-		return Message{}, fmt.Errorf("timeout")
+		return Message{}, fmt.Errorf("timeout - %v", msg)
+	}
+}
+
+func (c *Connection) SendRequestNew(msg Message) (<-chan Message, error) {
+	msg.ID = crypto.GenerateID(4)
+
+	ch := make(chan Message, 8)
+
+	c.Mu.Lock()
+	c.pending[msg.ID] = ch
+	fmt.Println("[Send Request] active channel on key", msg.ID)
+	c.Mu.Unlock()
+
+	fmt.Println("[Send Request] full message: ", msg)
+	c.Mu.Lock()
+	err := Send(c.RW.Writer, msg)
+	c.Mu.Unlock()
+
+	if err != nil {
+		c.Mu.Lock()
+		delete(c.pending, msg.ID)
+		close(ch)
+		c.Mu.Unlock()
+		return nil, err
+	}
+	return ch, nil
+}
+
+func (c *Connection) ReceiveLoopNew(node Node) {
+	for {
+		msg, err := Receive(c.RW.Reader)
+		if err != nil {
+			fmt.Println("[Receive loop][ERROR]", c.ID, ": ", err)
+			delete(c.pending, msg.ID)
+			return
+		}
+
+		fmt.Println("Received message:", msg)
+		if ch, ok := c.pending[msg.ID]; ok {
+
+			ch <- msg
+			if !msg.IsStream {
+				fmt.Println("Not stream")
+				c.Mu.Lock()
+				delete(c.pending, msg.ID)
+				close(ch)
+				c.Mu.Unlock()
+			}
+			continue
+		}
+
+		switch msg.Type {
+		case HEARTBEAT:
+			node.HandleHeartBeat(msg) //? maybe just need content bcs you know its heartbeat
+		default:
+			node.NodeAsyncEvent(msg, c)
+		}
 	}
 }

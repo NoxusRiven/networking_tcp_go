@@ -18,7 +18,7 @@ type ServiceType string
 
 const (
 	PingService     ServiceType = "PING"
-	UpladService    ServiceType = "FILE_UPLOAD"
+	UploadService   ServiceType = "FILE_UPLOAD"
 	DownloadService ServiceType = "FILE_DOWNLOAD"
 )
 
@@ -32,7 +32,7 @@ type AgentInfo struct {
 	LastHeartbeat time.Time
 	Status        NodeStatus
 
-	Microservices map[string][]*MsInfo
+	Microservices map[ServiceType][]*MsInfo
 
 	Cmd *exec.Cmd
 
@@ -47,7 +47,7 @@ type MsInfo struct {
 	Port string
 
 	//TODO: later make this a serviceType not string
-	Type string
+	Type ServiceType
 
 	status NodeStatus
 
@@ -66,7 +66,7 @@ type LBalancerInfo struct {
 	LastHeartbeat time.Time
 	Status        NodeStatus
 
-	Microservices map[string][]*MsInfo
+	Microservices map[ServiceType][]*MsInfo
 
 	Cmd *exec.Cmd `json:"-"`
 

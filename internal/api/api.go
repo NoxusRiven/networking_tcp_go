@@ -29,19 +29,19 @@ const (
 
 // ##################################### STRUCTURES #####################################
 
-type controllerRequest struct {
-	data     protocol.Message
-	response chan protocol.Message
-}
+// type controllerRequest struct {
+// 	data     protocol.Message
+// 	response chan protocol.Message
+// }
 
-type MessagePool struct {
-	data     protocol.Message
+type MessageExchange struct {
+	request  protocol.Message
 	response chan protocol.Message
 }
 
 type APIGateway struct {
 	listener                 net.Listener
-	controllerRequestChannel chan controllerRequest
+	controllerRequestChannel chan *MessageExchange
 
 	controllerConn *protocol.Connection
 
@@ -50,7 +50,7 @@ type APIGateway struct {
 	// lb id - connection num of connections to lb (for performance reasons)
 	lbConn map[string][]*protocol.Connection
 
-	requestChannelMap map[string]chan MessagePool
+	requestChannelMap map[string]chan *MessageExchange
 }
 
 // ##################################### STRUCTURES #####################################
@@ -74,9 +74,9 @@ func NewAPIGateway(port uint32) (*APIGateway, error) {
 
 func (api *APIGateway) Start(controllerAddr string) error {
 
-	api.controllerRequestChannel = make(chan controllerRequest)
+	api.controllerRequestChannel = make(chan *MessageExchange)
 
-	api.requestChannelMap = make(map[string]chan MessagePool)
+	api.requestChannelMap = make(map[string]chan *MessageExchange)
 
 	nc, err := net.Dial("tcp", controllerAddr)
 	if err != nil {
@@ -106,15 +106,14 @@ func (api *APIGateway) Start(controllerAddr string) error {
 		fmt.Println("New Client accepted")
 		go api.handleClient(cliConn)
 	}
-
-	//select {}
 }
 
 func (api *APIGateway) RegisterToController(conn *protocol.Connection) error {
 
-	resp, err := conn.SendRequest(protocol.Message{
+	respChan, err := conn.SendRequestNew(protocol.Message{
 		Type: protocol.REG_API,
 	})
+	resp := <-respChan
 
 	if err != nil {
 		return err
@@ -135,7 +134,7 @@ func (api *APIGateway) RegisterToController(conn *protocol.Connection) error {
 }
 
 func (api *APIGateway) syncLoadBalancers(msg protocol.Message) error {
-	//TODO: make loadbalancer info from controller message
+
 	var lbList []*protocol.LBalancerInfo
 
 	bytes, err := json.Marshal(msg.Content)
@@ -155,7 +154,7 @@ func (api *APIGateway) syncLoadBalancers(msg protocol.Message) error {
 
 	// for every loadbalancer start CONNECTION_NUM of connections
 	for _, lb := range lbList {
-		api.requestChannelMap[lb.ID] = make(chan MessagePool, CONNECTION_NUM)
+		api.requestChannelMap[lb.ID] = make(chan *MessageExchange, CONNECTION_NUM)
 
 		for i := 0; i < CONNECTION_NUM; i++ {
 
@@ -169,14 +168,24 @@ func (api *APIGateway) syncLoadBalancers(msg protocol.Message) error {
 
 			conn := protocol.NewConnection(nc)
 
-			go conn.ReceiveLoop(api)
+			go conn.ReceiveLoopNew(api)
 
 			//? maybe if conn to lb isnt working return and mark it as unhealty, and dont check other connection (also send info to controller about it)
 
 			//test if every connection works
-			resp, err := conn.SendRequest(protocol.Message{
+			respChan, err := conn.SendRequestNew(protocol.Message{
 				Type: protocol.HEARTBEAT,
 			})
+
+			if err != nil {
+				log["console"].Error("Error while sending request %v", err)
+			}
+			resp, ok := <-respChan
+
+			if !ok {
+				log["console"].Error("Channel closed")
+			}
+
 			if resp.Code != protocol.SUCCESS {
 				log["console"].Error("Loadbalancer %s:%s responsed with error code %d to heartbeat on %s connID, response: %v", lb.Host, lb.Port, resp.Code, conn.ID, resp)
 				continue
@@ -202,26 +211,36 @@ func (api *APIGateway) syncLoadBalancers(msg protocol.Message) error {
 	return nil
 }
 
-// TODO: later separate sending and receiving logic for different gorutines and match them with pending[id] (propably use conn.ReceiveLoop and SendRequest for this)
 func (api *APIGateway) messageWorker(conn *protocol.Connection) {
 	lb := api.lbInfo[conn.ID]
 
-	for pool := range api.requestChannelMap[lb.ID] {
-		req := pool.data
+	//var err error
+	for msgEx := range api.requestChannelMap[lb.ID] {
+		req := msgEx.request
 		log["console"].Debug("Message worker got request: %v", req)
 
-		resp, err := conn.SendRequest(req)
+		respChan, err := conn.SendRequestNew(req)
+
 		if err != nil {
-			log["console"].Error("Error receiving response from loadbalancer on %s connID, error: %v", conn.ID, err)
-			continue
-		}
-		if resp.Code != protocol.SUCCESS {
-			log["console"].Error("Loadbalancer responsed with error code %d to request on %s connID, response: %v", resp.Code, conn.ID, resp)
+			log["console"].Error("Error receiving message channel from loadbalancer on %s connID, error: %v", conn.ID, err)
 			continue
 		}
 
-		pool.response <- resp
-		log["console"].Debug("Message worker got response: %v", resp)
+		go func(msgEx *MessageExchange, respChan <-chan protocol.Message) {
+			for resp := range respChan {
+				log["console"].Debug("Message worker forwarding response: %v", resp)
+
+				msgEx.response <- resp
+			}
+		}(msgEx, respChan)
+		// if resp.Code != protocol.SUCCESS {
+		// 	log["console"].Error("Loadbalancer responsed with error code %d to request on %s connID, response: %v", resp.Code, conn.ID, resp)
+		// 	continue
+		// }
+
+		// for resp := range pool.response {
+		// 	log["console"].Debug("Message worker got response: %v", resp)
+		// }
 	}
 }
 
@@ -242,26 +261,35 @@ func (api *APIGateway) handleClient(cliConn *protocol.Connection) {
 			return
 		}
 
-		reqPool := MessagePool{
-			data:     request,
-			response: make(chan protocol.Message, 1),
+		reqPool := &MessageExchange{
+			request:  request,
+			response: make(chan protocol.Message, 8),
 		}
 
 		lb := api.findLbForRequest(request)
 
 		api.requestChannelMap[lb.ID] <- reqPool
 
-		response := <-reqPool.response
+		for response := range reqPool.response {
+			response.ID = request.ID
 
-		response.ID = request.ID
+			log["console"].Debug("trying to send response to client %v", response)
 
-		err = protocol.Send(cliConn.RW.Writer, response)
-		if err != nil {
-			log["console"].Error("Error while sending response to client: %v", err)
-			return
+			cliConn.Mu.Lock()
+			err = protocol.Send(cliConn.RW.Writer, response)
+			cliConn.Mu.Unlock()
+
+			if err != nil {
+				log["console"].Error("Error while sending response to client: %v", err)
+				return
+			}
+
+			log["console"].Debug("Sent response to client: %v", response)
+
+			if !response.IsStream {
+				close(reqPool.response)
+			}
 		}
-
-		log["console"].Debug("Sent response to client: %v", response)
 	}
 
 }
@@ -269,25 +297,24 @@ func (api *APIGateway) handleClient(cliConn *protocol.Connection) {
 func (api *APIGateway) findLbForRequest(request protocol.Message) *protocol.LBalancerInfo {
 	//TODO: later make better logic for choosing lb
 
-
 	log["console"].Debug("Request type str: %v", string(request.Type))
 	var lb *protocol.LBalancerInfo
 	for _, lbInf := range api.lbInfo {
-		if _, ok := lbInf.Microservices[string(request.Type)]; ok {
+		if _, ok := lbInf.Microservices[protocol.ServiceType(request.Type)]; ok {
 			lb = lbInf
 			break
 		}
 	}
 
-
 	log["console"].Debug("Found lb :%v", lb)
 
-	//TODO: fix parsing new loadbalancer and fix communicating to it ping message
+	//TODO: ? fix parsing new loadbalancer and fix communicating to it ping message
 	if lb == nil {
-		resp, err := api.controllerConn.SendRequest(protocol.Message{
+		respChan, err := api.controllerConn.SendRequestNew(protocol.Message{
 			Type:    protocol.CREATE,
 			Content: string(request.Type),
 		})
+		resp := <-respChan
 
 		log["console"].Debug("Response from controller after asking to create new lb for request: %v", resp)
 
@@ -318,13 +345,11 @@ func (api *APIGateway) findLbForRequest(request protocol.Message) *protocol.LBal
 		lbconn := api.lbConn[lbUpdate.ID][0]
 		lbfound := api.lbInfo[lbconn.ID]
 
-
 		log["console"].Debug("lb microservices: %v", lbUpdate.Microservices)
 
 		*lbfound = *lbUpdate
 		lb = lbfound
 	}
-
 
 	return lb
 
@@ -339,8 +364,8 @@ func (api *APIGateway) NodeAsyncEvent(msg protocol.Message, conn *protocol.Conne
 	case protocol.LB_SYNC:
 		api.syncLoadBalancers(msg)
 	default:
-		log["console"].Error("Unsupported NodeAsyncEvent type: %s", msg.Type)
-		log["console"].Debug("%v", msg)
+		//log["console"].Error("Unsupported NodeAsyncEvent type: %s", msg.Type)
+		log["console"].Debug("Forwarding to Client %v", msg)
 	}
 }
 
