@@ -8,11 +8,13 @@ import (
 )
 
 func determineService(ms *microservice.Microservice, service_type string) {
+	f := microservice.ServiceFields{Parent: ms}
+
 	switch service_type {
 	case "ping":
-		ms.Service = &microservice.PingService{}
+		ms.Service = &microservice.PingService{Fields: f}
 	case "idle":
-		ms.Service = &microservice.IdleService{}
+		ms.Service = &microservice.IdleService{Fields: f}
 	}
 }
 

@@ -48,7 +48,8 @@ func NewLoadBalancer(listPort string) (*LoadBalancer, error) {
 func (lb *LoadBalancer) Start() {
 	log["console"].Info("listening on %s", lb.listener.Addr().String())
 
-	go func() {
+	//not sure if this go func is needed because whole program is this loop
+	//go func() {
 		for {
 			conn, err := lb.listener.Accept()
 			if err != nil {
@@ -59,20 +60,16 @@ func (lb *LoadBalancer) Start() {
 			log["console"].Info("Accepted connection from %s", conn.RemoteAddr().String())
 			go lb.handleConnection(conn)
 		}
-	}()
+	//}()
 }
 
 func (lb *LoadBalancer) handleConnection(nc net.Conn) {
 	conn := protocol.NewConnection(nc)
 
-	//lb.RWmu.Lock()
 	lb.apiConn[conn.ID] = conn
-	//lb.RWmu.Unlock()
 
 	defer delete(lb.apiConn, conn.ID)
 	defer conn.Close()
-
-	//go conn.ReceiveLoopNew(lb)
 
 	for {
 		request, err := protocol.Receive(conn.RW.Reader)
@@ -81,141 +78,163 @@ func (lb *LoadBalancer) handleConnection(nc net.Conn) {
 			return
 		}
 
-		var response protocol.Message
-		var respChan <-chan protocol.Message = nil
-
-		switch request.Type {
-		//TODO: later extend this to parsing if update should add, delete or update ms data  (add - add, del - delete, nothing - just update) as a 6th part in msg
-		case protocol.UPDATE:
-			//update microservice data
-			ms, err := parseMsFromMessage(request)
-			if err != nil {
-				response = protocol.Message{
-					ID:           request.ID,
-					Type:         protocol.UPDATE,
-					ConnectionID: request.ConnectionID,
-					Code:         protocol.ERROR,
-					Content:      err.Error(),
+		//TODO? testing if putting this switch in go rutine will help with handling multiple clients properlly
+		go func(request protocol.Message) {
+			fmt.Println("Started gorutine on request", request)
+			var response protocol.Message
+			var respChan <-chan protocol.Message = nil
+			
+			switch request.Type {
+			//TODO: later extend this to parsing if update should add, delete or update ms data  (add - add, del - delete, nothing - just update) as a 6th part in msg
+			case protocol.UPDATE:
+				//update microservice data
+				ms, err := parseMsFromMessage(request)
+				if err != nil {
+					response = protocol.Message{
+						ID:           request.ID,
+						Type:         protocol.UPDATE,
+						ConnectionID: request.ConnectionID,
+						Code:         protocol.ERROR,
+						Content:      err.Error(),
+					}
+					break
 				}
-				break
-			}
 
-			lb.msInfo[ms.Type] = append(lb.msInfo[ms.Type], ms)
+				conn.RWmu.Lock()
+				_, ok := lb.msInfo[ms.Type]
+				conn.RWmu.Unlock()
 
-			if err = lb.connectToMicroservice(ms); err != nil {
-				response = protocol.Message{
-					ID:           request.ID,
-					Type:         protocol.UPDATE,
-					ConnectionID: request.ConnectionID,
-					Code:         protocol.ERROR,
-					Content:      err.Error(),
+				if !ok {
+					
+					if err = lb.connectToMicroservice(ms); err != nil {
+						response = protocol.Message{
+							ID:           request.ID,
+							Type:         protocol.UPDATE,
+							ConnectionID: request.ConnectionID,
+							Code:         protocol.ERROR,
+							Content:      err.Error(),
+						}
+						break
+					}
+
+					lb.msInfo[ms.Type] = append(lb.msInfo[ms.Type], ms)
+					log["console"].Debug("Successfully added ms to register %v:%v type:%v\n", ms.Host, ms.Port, ms.Type)
 				}
-				lb.msInfo[ms.Type] = lb.msInfo[ms.Type][:len(lb.msInfo[ms.Type])-1] //remove ms from list if connection failed
-				break
-			}
+				
+				response = protocol.Message{ID: request.ID, Type: request.Type, Code: protocol.SUCCESS}
 
-			log["console"].Debug("Successfully added ms %v:%v type:%v\n", ms.Host, ms.Port, ms.Type)
+			case protocol.HEARTBEAT:
+				log["console"].Debug("Received heartbeat message")
+				response = protocol.Message{ID: request.ID, Type: request.Type, Code: protocol.SUCCESS}
 
-			response = protocol.Message{ID: request.ID, Type: request.Type, Code: protocol.SUCCESS}
+			//microservice operations
+			case protocol.PING:
+				fallthrough
+			case protocol.IDLE:
+				fallthrough
+			case protocol.DOWNLOAD:
+				fallthrough
+			case protocol.UPLOAD:
+				//forward message to microservice
+				var msType protocol.ServiceType
 
-		case protocol.HEARTBEAT:
-			log["console"].Debug("Received heartbeat message")
-			response = protocol.Message{ID: request.ID, Type: request.Type, Code: protocol.SUCCESS}
+				msType = protocol.ServiceType(request.Type)
 
-		//microservice operations
-		case protocol.PING:
-			fallthrough
-		case protocol.IDLE:
-			fallthrough
-		case protocol.DOWNLOAD:
-			fallthrough
-		case protocol.UPLOAD:
-			//forward message to microservice
-			var msType protocol.ServiceType
+				//take first ms with this type
+				services := lb.msInfo[msType]
 
-			msType = protocol.ServiceType(request.Type)
-
-			//take first ms with this type
-			services := lb.msInfo[msType]
-
-			if len(services) < 1 {
-				log["console"].Error("no services with type %s available", msType)
-				response = protocol.Message{
-					ID:           request.ID,
-					Type:         request.Type,
-					ConnectionID: request.ConnectionID,
-					Code:         protocol.ERROR,
-					Content:      "no services available",
+				if len(services) < 1 {
+					log["console"].Error("no services with type %s available", msType)
+					response = protocol.Message{
+						ID:           request.ID,
+						Type:         request.Type,
+						ConnectionID: request.ConnectionID,
+						Code:         protocol.ERROR,
+						Content:      "no services available",
+					}
+					break
 				}
-				break
-			}
 
-			ms := services[0]
+				ms := services[0]
 
-			msConn := lb.msConn[ms.ID]
+				msConn := lb.msConn[ms.ID]
 
-			if msConn == nil {
+				if msConn == nil {
+					response = protocol.Message{
+						ID:           request.ID,
+						Type:         request.Type,
+						Code:         protocol.ERROR,
+						ConnectionID: request.ConnectionID,
+						Content:      "Connection to ms is nil",
+					}
+					break
+				}
+
+				log["console"].Debug("Sending ms request: %v", request)
+				respChan, err = msConn.SendRequestNew(request)
+				//response, err = msConn.SendRequest(request)
+				if err != nil {
+					response = protocol.Message{
+						ID:           request.ID,
+						Type:         request.Type,
+						Code:         protocol.ERROR,
+						ConnectionID: request.ConnectionID,
+						Content:      err.Error(),
+					}
+				}
+				log["console"].Debug("Request was sent successfuly: %v", request)
+			
+			default:
 				response = protocol.Message{
-					ID:           request.ID,
-					Type:         request.Type,
-					Code:         protocol.ERROR,
-					ConnectionID: request.ConnectionID,
-					Content:      "Connection to ms is nil",
+					ID: request.ID, Type: request.Type, Code: protocol.ERROR, Content: "unknown command: " + string(request.Type),
 				}
 			}
 
-			respChan, err = msConn.SendRequestNew(request)
-			//response, err = msConn.SendRequest(request)
-			if err != nil {
-				response = protocol.Message{
-					ID:           request.ID,
-					Type:         request.Type,
-					Code:         protocol.ERROR,
-					ConnectionID: request.ConnectionID,
-					Content:      err.Error(),
-				}
-			}
-
-		default:
-			response = protocol.Message{
-				ID: request.ID, Type: request.Type, Code: protocol.ERROR, Content: "unknown command: " + string(request.Type),
-			}
-		}
-
-		if respChan == nil {
-			response.ID = request.ID
-
-			log["console"].Debug("chan nil, response: %s", response)
-
-			if err := protocol.Send(conn.RW.Writer, response); err != nil {
-				log["console"].Error("Error sending response: %w", err)
-				continue
-			}
-		} else {
-
-			for response := range respChan {
+			if respChan == nil {
 				response.ID = request.ID
 
-				log["console"].Debug("chan present, response: %v", response)
+				//log["console"].Debug("chan nil, response: %s", response)
 
-				if err := protocol.Send(conn.RW.Writer, response); err != nil {
+				conn.RWmu.RLock()
+				err := protocol.Send(conn.RW.Writer, response)
+				conn.RWmu.RUnlock()
+				
+				if err != nil {
 					log["console"].Error("Error sending response: %w", err)
-					continue
+					return
+				}
+
+			} else {
+
+				log["console"].Debug("Waiting for channel %v messages...", respChan)
+				for response := range respChan {
+					response.ID = request.ID
+
+					log["console"].Debug("chan %v got response: %v", respChan, response)
+
+					conn.RWmu.RLock()
+					err := protocol.Send(conn.RW.Writer, response)
+					conn.RWmu.RUnlock()
+					
+					if err != nil {
+						log["console"].Error("Error sending response: %w", err)
+						return
+					}
 				}
 			}
-		}
+		}(request)
 
 	}
 }
 
-func (lb *LoadBalancer) handleIdle(msg protocol.Message, conn *protocol.Connection) {
-	err := protocol.Send(conn.RW.Writer, msg)
-	if err != nil {
-		log["console"].Error("%v", err)
-	}
+// func (lb *LoadBalancer) handleIdle(msg protocol.Message, conn *protocol.Connection) {
+// 	err := protocol.Send(conn.RW.Writer, msg)
+// 	if err != nil {
+// 		log["console"].Error("%v", err)
+// 	}
 
-	log["console"].Info("Sent Idle message")
-}
+// 	log["console"].Info("Sent Idle message")
+// }
 
 func parseMsFromMessage(msg protocol.Message) (*protocol.MsInfo, error) {
 	if msg.Content == "" {
@@ -292,8 +311,6 @@ func (lb *LoadBalancer) HandleHeartBeat(msg protocol.Message) {
 func (lb *LoadBalancer) NodeAsyncEvent(request protocol.Message, conn *protocol.Connection) {
 
 	switch request.Type {
-	// case protocol.IDLE:
-	// 	lb.handleIdle(request, conn)
 	default:
 		log["console"].Error("Unsupported NodeAsyncEvent type: %s", request.Type)
 	}
