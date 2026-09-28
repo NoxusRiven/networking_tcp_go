@@ -26,7 +26,7 @@ type Connection struct {
 
 	pending map[string]chan Message
 
-	Mu sync.Mutex
+	Mu   sync.Mutex
 	RWmu sync.RWMutex
 
 	closeOnce sync.Once
@@ -68,9 +68,9 @@ func (c *Connection) ReceiveLoop(node Node) {
 
 		switch msg.Type {
 		case HEARTBEAT:
-			go node.HandleHeartBeat(msg) //? maybe just need content bcs you know its heartbeat
+			go node.ReceiveHeartBeat(msg, c)
 		default:
-			go node.NodeAsyncEvent(msg, c)
+			go node.AsyncEvent(msg, c)
 		}
 	}
 }
@@ -152,9 +152,9 @@ func (c *Connection) ReceiveLoopNew(node Node) {
 
 		switch msg.Type {
 		case HEARTBEAT:
-			go node.HandleHeartBeat(msg) //? maybe just need content bcs you know its heartbeat
+			go node.ReceiveHeartBeat(msg, c)
 		default:
-			go node.NodeAsyncEvent(msg, c)
+			go node.AsyncEvent(msg, c)
 		}
 	}
 }

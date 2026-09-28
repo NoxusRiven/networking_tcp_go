@@ -160,11 +160,17 @@ func (c *Controller) createNewMessageNode(agentPort string, lbPort string) (*pro
 	return agent, lb, nil
 }
 
-func (c *Controller) HandleHeartBeat(msg protocol.Message) {
-	//? determine who sent heart beat from msg content ("AGENT"/"LB")
+func (c *Controller) ReceiveHeartBeat(msg protocol.Message, conn *protocol.Connection) {
+	log["console"].Debug("Received heart-beat: %v", msg)
+	switch msg.Content {
+	case "AGENT":
+		c.updateAgentHeartbeat(conn.ID)
+	case "LB":
+		c.updateLBHeartbeat(conn.ID)
+	}
 }
 
-func (c *Controller) NodeAsyncEvent(msg protocol.Message, conn *protocol.Connection) {
+func (c *Controller) AsyncEvent(msg protocol.Message, conn *protocol.Connection) {
 	/**
 	*TODO: async events:
 		** raports
@@ -175,8 +181,32 @@ func (c *Controller) NodeAsyncEvent(msg protocol.Message, conn *protocol.Connect
 
 	switch msg.Type {
 	case protocol.CREATE:
-		// api gateway asks controller to create new service based on user request
+		//first check if for some reason api doesnt know lb with this ms exists
+		var lb *protocol.LBalancerInfo = nil
 		var response protocol.Message
+		mServices, ok := c.microservices[protocol.ServiceType(msg.Content.(string))]
+
+		//TODO: take first one, later do load
+		if ok {
+			log["console"].Debug("Found services that api though didnt existed")
+			ms := mServices[0]
+			for _, l := range c.lbInfo {
+				if l.NodeID == ms.NodeID {
+					lb = l
+					break
+				}
+			}
+
+			response = protocol.Message{
+				ID:           msg.ID,
+				SessionID:    msg.SessionID,
+				ConnectionID: msg.ConnectionID,
+				Type:         protocol.UPDATE,
+				Content:      lb,
+			}
+		}
+
+		// api gateway asks controller to create new service based on user request
 		_, lb, err := c.createNewService(protocol.ServiceType(msg.Content.(string)))
 
 		if err != nil {
@@ -293,30 +323,9 @@ send:
 	}
 }
 
-func (c *Controller) handleAPIRequst(conn *protocol.Connection, msg protocol.Message) {
+// this func will be called when loadbalancers and microservices change without api knowing it
+func (c *Controller) syncWithAPI(conn *protocol.Connection) {
 
-	ms, err := c.findService(protocol.ServiceType(msg.Type))
-
-	if err != nil {
-		response := protocol.Message{
-			Type:    protocol.PING,
-			Code:    protocol.ERROR,
-			Content: err.Error(),
-		}
-
-		protocol.Send(conn.RW.Writer, response)
-
-		return
-	}
-
-	response, err := c.messageService(ms, msg)
-	if err != nil {
-		return
-	}
-
-	log["console"].Debug("response from ms %s", response)
-
-	protocol.Send(conn.RW.Writer, response)
 }
 
 // #################################  API FUNCTIONS ################################
@@ -395,6 +404,7 @@ func (c *Controller) connectToAgent(agent *protocol.AgentInfo) (*protocol.Connec
 
 				conn := protocol.NewConnection(nc)
 				c.Register(conn, protocol.ConnAgent, agent.ID)
+				c.updateAgentHeartbeat(conn.ID)
 
 				return conn, nil
 			}
@@ -448,38 +458,31 @@ func (c *Controller) KillAllAgents() {
 	c.agentsConn = make(map[string]*protocol.Connection)
 }
 
-func (c *Controller) KillAllLoadBalancers() {
-	for _, lb := range c.lbInfo {
-		if lb == nil || lb.Cmd == nil || lb.Cmd.Process == nil {
-			continue
-		}
-		lb.Cmd.Process.Kill()
-	}
+//TODO!: might not be needed
+// func (c *Controller) handleAgentMessage(conn *protocol.Connection, msg protocol.Message) {
+// 	switch msg.Type {
+// 	case protocol.HEARTBEAT:
+// 		c.updateAgentHeartbeat(conn.ID)
+// 		log["console"].Info("heartbeat from agent %s", conn.ID)
 
-	// reset maps
-	c.lbInfo = make(map[string]*protocol.LBalancerInfo)
-	c.lbConn = make(map[string]*protocol.Connection)
-}
+// 	default:
+// 		log["console"].Info("unknown agent message type")
+// 	}
+// }
 
-func (c *Controller) handleAgentMessage(conn *protocol.Connection, msg protocol.Message) {
-	switch msg.Type {
-	case protocol.HEARTBEAT:
-		c.updateAgentHeartbeat(conn.ID)
-		log["console"].Info("heartbeat from agent %s", conn.ID)
-
-	default:
-		log["console"].Info("unknown agent message type")
-	}
-}
-
-func (c *Controller) updateAgentHeartbeat(id string) {
+func (c *Controller) updateAgentHeartbeat(agentConnID string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if info, ok := c.agentsInfo[id]; ok {
-		info.Mu.Lock()
-		info.LastHeartbeat = time.Now()
-		info.Status = protocol.Healthy
-		info.Mu.Unlock()
+	if agent, ok := c.agentsInfo[agentConnID]; ok {
+		//log["console"].Debug("Received from agent %v last heartbeat was %v", agent.ID, agent.LastHeartbeat)
+		agent.Mu.Lock()
+		agent.LastHeartbeat = time.Now()
+		agent.Status = protocol.Healthy
+		agent.Mu.Unlock()
+		log["console"].Debug("Agent %v heartbeat is %v", agent.ID, agent.LastHeartbeat)
+
+	} else {
+		log["console"].Error("Unknown agent in connection with id: %v", agentConnID)
 	}
 }
 
@@ -498,7 +501,7 @@ func (c *Controller) onAgentTimeout(agentID string) {
 	info.Mu.Unlock()
 	c.mu.Unlock()
 
-	log["console"].Debug("[SAFETY] Agent %s heartbeat timeout — initiating safety measures\n", agentID)
+	log["console"].Info("Agent %s heartbeat timeout — initiating safety measures\n", agentID)
 
 	conn := c.GetAgentConnByID(agentID)
 	if conn != nil {
@@ -545,6 +548,17 @@ func (c *Controller) createNewLoadBalancer(port string) (*protocol.LBalancerInfo
 		})
 	}
 
+	if err = protocol.Send(conn.RW.Writer, protocol.Message{
+		ID:      crypto.GenerateID(crypto.MESSAGE_ID),
+		Type:    protocol.UPDATE,
+		Content: "CONTROLLER",
+	}); err != nil {
+		_ = cmd.Process.Kill()
+		return nil, logger.StrToError(log["string"], func() {
+			log["string"].Error("Error sending signal create message to loadbalancer: %v\n", err)
+		})
+	}
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.lbInfo[conn.ID] = lb
@@ -586,33 +600,50 @@ func (c *Controller) connectToLB(lb *protocol.LBalancerInfo) (*protocol.Connecti
 	}
 }
 
-func (c *Controller) handleLBMessage(conn *protocol.Connection, msg protocol.Message) {
+func (c *Controller) KillAllLoadBalancers() {
+	for _, lb := range c.lbInfo {
+		if lb == nil || lb.Cmd == nil || lb.Cmd.Process == nil {
+			continue
+		}
+		lb.Cmd.Process.Kill()
+	}
 
-	log["console"].Error("handleLbMessage(): Connection id: %s", conn.ID)
+	// reset maps
+	c.lbInfo = make(map[string]*protocol.LBalancerInfo)
+	c.lbConn = make(map[string]*protocol.Connection)
+}
 
-	switch msg.Type {
+//! TODO: might not be needed
+// func (c *Controller) handleLBMessage(conn *protocol.Connection, msg protocol.Message) {
 
-	default:
-		log["console"].Info("lb message")
+// 	log["console"].Error("handleLbMessage(): Connection id: %s", conn.ID)
+
+// 	switch msg.Type {
+
+// 	default:
+// 		log["console"].Info("lb message")
+// 	}
+// }
+
+func (c *Controller) updateLBHeartbeat(id string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if lb, ok := c.lbInfo[id]; ok {
+		//log["console"].Debug("Received from lb %v last heartbeat was %v", lb.ID, lb.LastHeartbeat)
+		lb.Mu.Lock()
+		lb.LastHeartbeat = time.Now()
+		lb.Status = protocol.Healthy
+		lb.Mu.Unlock()
+		log["console"].Debug("Received from lb %v last heartbeat is %v", lb.ID, lb.LastHeartbeat)
+
+	} else {
+		log["console"].Error("Unknown lb in connection: %v", c.agentsConn[lb.ID])
 	}
 }
 
 // ################################ LOAD BALANCER FUNCTIONS ###################################
 
 // ################################ MICROSERVICE FUNCTIONS ###################################
-func (c *Controller) findService(serviceType protocol.ServiceType) (*protocol.MsInfo, error) {
-
-	c.mu.RLock()
-	msArr, ok := c.microservices[serviceType]
-	c.mu.RUnlock()
-
-	if ok && len(msArr) > 0 {
-		return msArr[0], nil
-	}
-
-	ms, _, err := c.createNewService(serviceType)
-	return ms, err
-}
 
 func (c *Controller) createNewService(serviceType protocol.ServiceType) (*protocol.MsInfo, *protocol.LBalancerInfo, error) {
 
@@ -680,6 +711,9 @@ func (c *Controller) createNewService(serviceType protocol.ServiceType) (*protoc
 		})
 	}
 
+	//update agent health based on successful response
+	c.updateAgentHeartbeat(agentConn.ID)
+
 	ms := parseMsFromResponse(response.Content)
 	ms.ID = crypto.GenerateID(crypto.INSTANCE_NODE)
 	ms.NodeID = agent.NodeID
@@ -697,6 +731,9 @@ func (c *Controller) createNewService(serviceType protocol.ServiceType) (*protoc
 			log["string"].Error("Bad code type %d, message: %s\n", response.Code, response.Content)
 		})
 	}
+
+	//same as with agent
+	c.updateLBHeartbeat(lbConn.ID)
 
 	log["console"].Debug("LB response after getting ms data: %v", response)
 
@@ -718,38 +755,6 @@ func parseMsFromResponse(content any) *protocol.MsInfo {
 	}
 	ms.Host, ms.Port = host, port
 	return ms
-}
-
-func (c *Controller) messageService(ms *protocol.MsInfo, msg protocol.Message) (protocol.Message, error) {
-	nodeID := ms.NodeID
-	var lb *protocol.LBalancerInfo
-	for _, l := range c.lbInfo {
-		if l.NodeID == nodeID {
-			lb = l
-			break
-		}
-	}
-
-	if lb == nil {
-		return protocol.Message{}, logger.StrToError(log["string"], func() {
-			log["string"].Error("Loadbalancer with the same node id as ms not found\n")
-		})
-	}
-
-	conn := c.lbConn[lb.ID]
-
-	if conn == nil {
-		return protocol.Message{}, logger.StrToError(log["string"], func() {
-			log["string"].Error("Loadbalancer connection not found\n")
-		})
-	}
-
-	response, err := conn.SendRequest(msg)
-	if err != nil {
-		return protocol.Message{}, err
-	}
-
-	return response, nil
 }
 
 // ################################ MICROSERVICE FUNCTIONS ###################################

@@ -8,6 +8,8 @@ import (
 type ByteCount int
 
 const (
+	MESSAGE_ID ByteCount = 4
+
 	MESSAGE_NODE  ByteCount = 4
 	INSTANCE_NODE ByteCount = 8
 	CONN          ByteCount = 8

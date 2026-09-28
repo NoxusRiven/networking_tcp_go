@@ -1,6 +1,6 @@
 package protocol
 
 type Node interface {
-	HandleHeartBeat(Message)
-	NodeAsyncEvent(Message, *Connection)
+	ReceiveHeartBeat(Message, *Connection)
+	AsyncEvent(Message, *Connection)
 }

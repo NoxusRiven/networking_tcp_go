@@ -50,16 +50,16 @@ func (lb *LoadBalancer) Start() {
 
 	//not sure if this go func is needed because whole program is this loop
 	//go func() {
-		for {
-			conn, err := lb.listener.Accept()
-			if err != nil {
-				log["console"].Error("Accept error: %w", err)
-				continue
-			}
-
-			log["console"].Info("Accepted connection from %s", conn.RemoteAddr().String())
-			go lb.handleConnection(conn)
+	for {
+		conn, err := lb.listener.Accept()
+		if err != nil {
+			log["console"].Error("Accept error: %w", err)
+			continue
 		}
+
+		log["console"].Info("Accepted connection from %s", conn.RemoteAddr().String())
+		go lb.handleConnection(conn)
+	}
 	//}()
 }
 
@@ -83,10 +83,14 @@ func (lb *LoadBalancer) handleConnection(nc net.Conn) {
 			fmt.Println("Started gorutine on request", request)
 			var response protocol.Message
 			var respChan <-chan protocol.Message = nil
-			
+
 			switch request.Type {
 			//TODO: later extend this to parsing if update should add, delete or update ms data  (add - add, del - delete, nothing - just update) as a 6th part in msg
 			case protocol.UPDATE:
+				//this is case when controller freshly connected and wants to signal that this is his connection
+				if str, ok := request.Content.(string); ok && str == "CONTROLLER" {
+					go lb.SendHeartBeat(conn)
+				}
 				//update microservice data
 				ms, err := parseMsFromMessage(request)
 				if err != nil {
@@ -105,7 +109,7 @@ func (lb *LoadBalancer) handleConnection(nc net.Conn) {
 				conn.RWmu.Unlock()
 
 				if !ok {
-					
+
 					if err = lb.connectToMicroservice(ms); err != nil {
 						response = protocol.Message{
 							ID:           request.ID,
@@ -120,7 +124,7 @@ func (lb *LoadBalancer) handleConnection(nc net.Conn) {
 					lb.msInfo[ms.Type] = append(lb.msInfo[ms.Type], ms)
 					log["console"].Debug("Successfully added ms to register %v:%v type:%v\n", ms.Host, ms.Port, ms.Type)
 				}
-				
+
 				response = protocol.Message{ID: request.ID, Type: request.Type, Code: protocol.SUCCESS}
 
 			case protocol.HEARTBEAT:
@@ -183,7 +187,7 @@ func (lb *LoadBalancer) handleConnection(nc net.Conn) {
 					}
 				}
 				log["console"].Debug("Request was sent successfuly: %v", request)
-			
+
 			default:
 				response = protocol.Message{
 					ID: request.ID, Type: request.Type, Code: protocol.ERROR, Content: "unknown command: " + string(request.Type),
@@ -198,7 +202,7 @@ func (lb *LoadBalancer) handleConnection(nc net.Conn) {
 				conn.RWmu.RLock()
 				err := protocol.Send(conn.RW.Writer, response)
 				conn.RWmu.RUnlock()
-				
+
 				if err != nil {
 					log["console"].Error("Error sending response: %w", err)
 					return
@@ -215,7 +219,7 @@ func (lb *LoadBalancer) handleConnection(nc net.Conn) {
 					conn.RWmu.RLock()
 					err := protocol.Send(conn.RW.Writer, response)
 					conn.RWmu.RUnlock()
-					
+
 					if err != nil {
 						log["console"].Error("Error sending response: %w", err)
 						return
@@ -227,14 +231,22 @@ func (lb *LoadBalancer) handleConnection(nc net.Conn) {
 	}
 }
 
-// func (lb *LoadBalancer) handleIdle(msg protocol.Message, conn *protocol.Connection) {
-// 	err := protocol.Send(conn.RW.Writer, msg)
-// 	if err != nil {
-// 		log["console"].Error("%v", err)
-// 	}
+func (a *LoadBalancer) SendHeartBeat(conn *protocol.Connection) {
 
-// 	log["console"].Info("Sent Idle message")
-// }
+	msg := protocol.Message{
+		Type:    protocol.HEARTBEAT,
+		Content: "LB",
+	}
+
+	for {
+		time.Sleep(5 * time.Second)
+
+		msg.ID = crypto.GenerateID(crypto.MESSAGE_ID)
+		if err := protocol.Send(conn.RW.Writer, msg); err != nil {
+			log["console"].Error("Error sending heartbeat: %v", err)
+		}
+	}
+}
 
 func parseMsFromMessage(msg protocol.Message) (*protocol.MsInfo, error) {
 	if msg.Content == "" {
@@ -256,7 +268,7 @@ func parseMsFromMessage(msg protocol.Message) (*protocol.MsInfo, error) {
 		return nil, err
 	}
 
-	log["console"].Debug("Created ms (%v %v %v %v %v)", dataSplit[0], dataSplit[1], dataSplit[2], dataSplit[3], dataSplit[4])
+	log["console"].Debug("Ms created from message (%v %v %v %v %v)", dataSplit[0], dataSplit[1], dataSplit[2], dataSplit[3], dataSplit[4])
 
 	return &protocol.MsInfo{
 		ID:     dataSplit[0],
@@ -304,11 +316,11 @@ func (lb *LoadBalancer) connectToMicroservice(ms *protocol.MsInfo) error {
 
 // ################################# NODE METHODS #################################
 
-func (lb *LoadBalancer) HandleHeartBeat(msg protocol.Message) {
+func (lb *LoadBalancer) ReceiveHeartBeat(msg protocol.Message, conn *protocol.Connection) {
 
 }
 
-func (lb *LoadBalancer) NodeAsyncEvent(request protocol.Message, conn *protocol.Connection) {
+func (lb *LoadBalancer) AsyncEvent(request protocol.Message, conn *protocol.Connection) {
 
 	switch request.Type {
 	default:

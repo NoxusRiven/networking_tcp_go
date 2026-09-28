@@ -42,7 +42,6 @@ func (c *CLI) Run(host string, port string) error {
 				"(Select number below):\n" +
 				"1. Ping Server\n" +
 				"2. Do Idle Work\n" +
-				"3. Post Message (not implemented)\n" +
 				"0. Exit program",
 		)
 
@@ -54,8 +53,6 @@ func (c *CLI) Run(host string, port string) error {
 		case "2":
 			//TODO: maybe use go to use cli while streaming happens
 			c.HandleIdle()
-		case "3":
-			fmt.Println("Not implemented. Yet...")
 		case "0":
 			c.HandleExit()
 		default:
@@ -128,11 +125,11 @@ func (c *CLI) HandleExit() {
 
 // ################################ NODE METHODS ################################
 
-func (c *CLI) HandleHeartBeat(msg protocol.Message) {
+func (c *CLI) ReceiveHeartBeat(msg protocol.Message, conn *protocol.Connection) {
 	// client doesnt get heartbeat checks
 }
 
-func (c *CLI) NodeAsyncEvent(msg protocol.Message, conn *protocol.Connection) {
+func (c *CLI) AsyncEvent(msg protocol.Message, conn *protocol.Connection) {
 	// client always should be pending for messages so if any message is directed here it is a bug
 
 	fmt.Println("[ERROR]: Incorrect behaviour! Client received message '", msg, "' in NodeAsyncEvent() even though CLI always expects response.")

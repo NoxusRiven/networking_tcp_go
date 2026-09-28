@@ -3,12 +3,14 @@ package agent
 import (
 	"fmt"
 	"net"
+	crypto "networking/tcp/internal/cryptography"
 	"networking/tcp/internal/logger"
 	"networking/tcp/internal/platform"
 	"networking/tcp/internal/protocol"
 	"os"
 	"os/exec"
 	"sync"
+	"time"
 )
 
 var log logger.Loggers = logger.NewLoggers(
@@ -37,8 +39,6 @@ type Agent struct {
 	nextPortCount uint16
 }
 
-//TODO!: for some reason api isnt pending on PING
-
 // TODO: handle getting free port and communicating it to controller
 func NewAgent(lisPort string) (*Agent, error) {
 	//listen, err := net.Listen("tcp", ":0")
@@ -58,23 +58,40 @@ func NewAgent(lisPort string) (*Agent, error) {
 func (a *Agent) Start() {
 	log["console"].Debug("Agent listening for Controller on %s", a.listener.Addr().String())
 
-	conn, err := a.listener.Accept()
+	nc, err := a.listener.Accept()
 	if err != nil {
 		log["console"].Debug("Accept error %w", err)
 		return
 	}
 
-	go a.handleControllerConnection(conn)
-
+	a.handleControllerConnection(nc)
 }
 
 func (a *Agent) handleControllerConnection(nc net.Conn) {
 	conn := protocol.NewConnection(nc)
 	defer conn.Close()
 
-	conn.ReceiveLoop(a)
+	go conn.ReceiveLoop(a)
+
+	go a.SendHeartBeat(conn)
+
+	select {}
+}
+
+func (a *Agent) SendHeartBeat(conn *protocol.Connection) {
+
+	msg := protocol.Message{
+		Type:    protocol.HEARTBEAT,
+		Content: "AGENT",
+	}
 
 	for {
+		time.Sleep(5 * time.Second)
+
+		msg.ID = crypto.GenerateID(crypto.MESSAGE_ID)
+		if err := protocol.Send(conn.RW.Writer, msg); err != nil {
+			log["console"].Error("Error sending heartbeat: %v", err)
+		}
 	}
 }
 
@@ -139,11 +156,11 @@ func healthCheck() error {
 
 // ################################# NODE METHODS #################################
 
-func (a *Agent) HandleHeartBeat(msg protocol.Message) {
+func (a *Agent) ReceiveHeartBeat(msg protocol.Message, conn *protocol.Connection) {
 
 }
 
-func (a *Agent) NodeAsyncEvent(request protocol.Message, conn *protocol.Connection) {
+func (a *Agent) AsyncEvent(request protocol.Message, conn *protocol.Connection) {
 
 	var response protocol.Message
 

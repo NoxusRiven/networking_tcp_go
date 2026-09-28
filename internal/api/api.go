@@ -8,7 +8,6 @@ import (
 	"networking/tcp/internal/logger"
 	"networking/tcp/internal/protocol"
 	"os"
-	"time"
 )
 
 var log = logger.NewLoggers(
@@ -28,11 +27,6 @@ const (
 )
 
 // ##################################### STRUCTURES #####################################
-
-// type controllerRequest struct {
-// 	data     protocol.Message
-// 	response chan protocol.Message
-// }
 
 type MessageExchange struct {
 	request  protocol.Message
@@ -193,11 +187,6 @@ func (api *APIGateway) syncLoadBalancers(msg protocol.Message) error {
 
 			log["console"].Debug("Response from loadbalancer %s:%s on %s connID: %v", lb.Host, lb.Port, conn.ID, resp)
 
-			lb.Mu.Lock()
-			lb.LastHeartbeat = time.Now()
-			lb.Status = protocol.Healthy
-			lb.Mu.Unlock()
-
 			//successfully connected to lb, now map them to thier data structures
 			conn.ID = crypto.GenerateID(crypto.CONN)
 
@@ -233,14 +222,6 @@ func (api *APIGateway) messageWorker(conn *protocol.Connection) {
 				msgEx.response <- resp
 			}
 		}(msgEx, respChan)
-		// if resp.Code != protocol.SUCCESS {
-		// 	log["console"].Error("Loadbalancer responsed with error code %d to request on %s connID, response: %v", resp.Code, conn.ID, resp)
-		// 	continue
-		// }
-
-		// for resp := range pool.response {
-		// 	log["console"].Debug("Message worker got response: %v", resp)
-		// }
 	}
 }
 
@@ -308,7 +289,6 @@ func (api *APIGateway) findLbForRequest(request protocol.Message) *protocol.LBal
 
 	log["console"].Debug("Found lb :%v", lb)
 
-	//TODO: ? fix parsing new loadbalancer and fix communicating to it ping message
 	if lb == nil {
 		respChan, err := api.controllerConn.SendRequestNew(protocol.Message{
 			Type:    protocol.CREATE,
@@ -355,13 +335,14 @@ func (api *APIGateway) findLbForRequest(request protocol.Message) *protocol.LBal
 
 }
 
-func (api *APIGateway) HandleHeartBeat(msg protocol.Message) {
+func (api *APIGateway) ReceiveHeartBeat(msg protocol.Message, conn *protocol.Connection) {
 
 }
 
-func (api *APIGateway) NodeAsyncEvent(msg protocol.Message, conn *protocol.Connection) {
+func (api *APIGateway) AsyncEvent(msg protocol.Message, conn *protocol.Connection) {
 	switch msg.Type {
-	case protocol.LB_SYNC:
+	case protocol.UPDATE: //? lb_sync might not be needed if api receives async update it comes from controller
+		//case protocol.LB_SYNC:
 		api.syncLoadBalancers(msg)
 	default:
 		//log["console"].Error("Unsupported NodeAsyncEvent type: %s", msg.Type)

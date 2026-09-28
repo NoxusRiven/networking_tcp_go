@@ -24,6 +24,7 @@ func main() {
 	fmt.Println("Received signal:", sig)
 
 	controller.KillAllAgents()
+	controller.KillAllLoadBalancers()
 
 	fmt.Println("Controller shutdown complete")
 	os.Exit(1)
