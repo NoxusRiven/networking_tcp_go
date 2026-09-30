@@ -113,7 +113,7 @@ func (api *APIGateway) RegisterToController(conn *protocol.Connection) error {
 		return err
 	}
 	if resp.Code != protocol.SUCCESS {
-		return logger.StrToErrorNew(log["string"], fmt.Sprintf("Controller responsed with error code %d when registering api", resp.Code))
+		return logger.StrToErrorNew(log, "Controller responsed with error code %d when registering api", resp.Code)
 	}
 
 	// first sync will happend after registration, every other will happen asynchronously
@@ -133,12 +133,12 @@ func (api *APIGateway) syncLoadBalancers(msg protocol.Message) error {
 
 	bytes, err := json.Marshal(msg.Content)
 	if err != nil {
-		return logger.StrToErrorNew(log["console"], fmt.Sprintf("Unable to marshal loadbalancer info, error: %v", err))
+		return logger.StrToErrorNew(log, "Unable to marshal loadbalancer info, error: %v", err)
 	}
 
 	err = json.Unmarshal(bytes, &lbList)
 	if err != nil {
-		return logger.StrToErrorNew(log["console"], fmt.Sprintf("Unable to decode loadbalancers from controllers message, error: %v", err))
+		return logger.StrToErrorNew(log, "Unable to decode loadbalancers from controllers message, error: %v", err)
 	}
 
 	log["console"].Debug("Converted json into lb list")
@@ -348,6 +348,10 @@ func (api *APIGateway) AsyncEvent(msg protocol.Message, conn *protocol.Connectio
 		//log["console"].Error("Unsupported NodeAsyncEvent type: %s", msg.Type)
 		log["console"].Debug("Forwarding to Client %v", msg)
 	}
+}
+
+func (api *APIGateway) String() string {
+	return "API"
 }
 
 // ##################################### FUNCTIONS #####################################

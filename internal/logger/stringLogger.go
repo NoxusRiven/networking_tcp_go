@@ -50,8 +50,9 @@ func StrToError(log Logger, f func()) error {
 	return fmt.Errorf("%s", str)
 }
 
-func StrToErrorNew(log Logger, fstr string) error {
-	str := GetString(log, func() { log.Error(fstr) })
+func StrToErrorNew(log Loggers, fstr string, args ...any) error {
+	l := log["string"]
+	str := GetString(l, func() { l.Error(fstr, args) })
 
 	return fmt.Errorf("%s", str)
 }

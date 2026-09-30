@@ -34,7 +34,7 @@ func (ping *PingService) HandleRequest(request protocol.Message) {
 	}
 
 	log["console"].Debug("sending response to lb %v", response)
-	err := protocol.Send(ping.Fields.Parent.RW.Writer, response)
+	err := protocol.Send(ping.Fields.Parent.LbConn.RW.Writer, response)
 	if err != nil {
 		log["console"].Error("sending response error %w", err)
 		return
@@ -57,7 +57,7 @@ func (idle *IdleService) HandleRequest(request protocol.Message) {
 			Content:      i,
 		}
 
-		err := protocol.Send(idle.Fields.Parent.RW.Writer, response)
+		err := protocol.Send(idle.Fields.Parent.LbConn.RW.Writer, response)
 		if err != nil {
 			log["console"].Error("sending response error %w", err)
 			return
@@ -75,7 +75,7 @@ func (idle *IdleService) HandleRequest(request protocol.Message) {
 	}
 
 	log["console"].Debug("sending response to lb %v", response)
-	err := protocol.Send(idle.Fields.Parent.RW.Writer, response)
+	err := protocol.Send(idle.Fields.Parent.LbConn.RW.Writer, response)
 	if err != nil {
 		log["console"].Error("sending response error %w", err)
 		return

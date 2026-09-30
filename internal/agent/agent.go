@@ -26,9 +26,9 @@ const (
 )
 
 type Agent struct {
-	//key is service type
-	msInfo map[string][]*protocol.MsInfo
-	//key is ID
+	//key is Conn ID
+	msInfo map[string]*protocol.MsInfo
+	//key is MsInfo ID
 	msConn map[string]*protocol.Connection
 
 	listener net.Listener
@@ -49,7 +49,8 @@ func NewAgent(lisPort string) (*Agent, error) {
 
 	return &Agent{
 		listener:      listen,
-		msInfo:        make(map[string][]*protocol.MsInfo),
+		msInfo:        make(map[string]*protocol.MsInfo),
+		msConn:        make(map[string]*protocol.Connection),
 		nextPortCount: 0,
 	}, nil
 
@@ -124,15 +125,22 @@ func (a *Agent) createMicroservice(host string, port string, ms_type string) (*p
 	log["console"].Info("ms %s process started successfully! Pid: %d", ms_type, cmd.Process.Pid)
 
 	ms := &protocol.MsInfo{
+		ID:   crypto.GenerateID(crypto.INSTANCE_NODE),
 		Host: host,
 		Port: port,
 		Type: protocol.ServiceType(ms_type),
 	}
 
-	// TODO: healthCheck(ms) when microservice implements it
+	//check if connection works
+	msConn, err := a.handleMicroserviceConnection(ms)
+	if err != nil {
+		return nil, logger.StrToErrorNew(log, "Error while handling ms connection: %v", err)
+	}
 
 	a.RWmu.Lock()
-	a.msInfo[ms_type] = append(a.msInfo[ms_type], ms)
+	log["console"].Debug("saving ms conn with ms id %v and ms info with conn id %v", ms.ID, msConn.ID)
+	a.msInfo[msConn.ID] = ms
+	a.msConn[ms.ID] = msConn
 	a.RWmu.Unlock()
 
 	return ms, nil
@@ -140,24 +148,59 @@ func (a *Agent) createMicroservice(host string, port string, ms_type string) (*p
 
 func (a *Agent) KillAllMS() {
 	for _, ms := range a.msInfo {
-		for _, m := range ms {
-			if m == nil || m.Cmd == nil || m.Cmd.Process == nil {
-				continue
-			}
-			m.Cmd.Process.Kill()
+		if ms == nil || ms.Cmd == nil || ms.Cmd.Process == nil {
+			continue
 		}
+		ms.Cmd.Process.Kill()
 
 	}
 }
 
-func healthCheck() error {
-	return nil
+func (a *Agent) handleMicroserviceConnection(ms *protocol.MsInfo) (*protocol.Connection, error) {
+
+	var nc net.Conn
+	var err error
+	if nc, err = net.Dial("tcp", net.JoinHostPort(ms.Host, ms.Port)); err != nil {
+		return nil, logger.StrToErrorNew(log, "Error while trying to connect to microservice %v", ms)
+	}
+
+	msConn := protocol.NewConnection(nc)
+	msConn.ID = crypto.GenerateID(crypto.CONN)
+
+	go msConn.ReceiveLoop(a)
+
+	resp, err := msConn.SendRequest(protocol.Message{
+		ID:      crypto.GenerateID(crypto.MESSAGE_ID),
+		Type:    protocol.HEARTBEAT,
+		Content: "AGENT",
+	})
+
+	if err != nil || resp.Type != protocol.HEARTBEAT || resp.Code != protocol.SUCCESS {
+		return nil, logger.StrToErrorNew(log, "Error when recived response to test heartbeat: %v", resp)
+	}
+
+	log["console"].Debug("Successfully connected to ms: %v", ms)
+
+	return msConn, nil
 }
 
 // ################################# NODE METHODS #################################
 
 func (a *Agent) ReceiveHeartBeat(msg protocol.Message, conn *protocol.Connection) {
+	a.RWmu.Lock()
+	defer a.RWmu.Unlock()
+	log["console"].Debug("conn id: %v", conn.ID)
+	if ms, ok := a.msInfo[conn.ID]; ok {
+		log["console"].Debug("Microservice %v heartbeat was %v", ms.ID, ms.LastHeartbeat)
+		ms.Mu.Lock()
+		ms.LastHeartbeat = time.Now()
+		ms.Status = protocol.Healthy
+		ms.Mu.Unlock()
+		log["console"].Debug("Microservice %v heartbeat is %v", ms.ID, ms.LastHeartbeat)
 
+	} else {
+		log["console"].Error("Unknown agent in connection with id: %v", conn.ID)
+	}
 }
 
 func (a *Agent) AsyncEvent(request protocol.Message, conn *protocol.Connection) {
@@ -194,6 +237,10 @@ func (a *Agent) AsyncEvent(request protocol.Message, conn *protocol.Connection) 
 		log["console"].Error("Error sending response: %w", err)
 		return
 	}
+}
+
+func (a *Agent) String() string {
+	return "Agent"
 }
 
 // ################################# NODE METHODS #################################

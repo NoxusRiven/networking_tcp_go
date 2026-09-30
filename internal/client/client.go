@@ -135,4 +135,8 @@ func (c *CLI) AsyncEvent(msg protocol.Message, conn *protocol.Connection) {
 	fmt.Println("[ERROR]: Incorrect behaviour! Client received message '", msg, "' in NodeAsyncEvent() even though CLI always expects response.")
 }
 
+func (c *CLI) String() string {
+	return "Client"
+}
+
 // ################################ NODE METHODS ################################

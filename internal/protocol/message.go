@@ -38,6 +38,9 @@ const (
 	//? might not be needed, check this out
 	LB_SYNC MessageType = "SYNCRONIZE_LOADBALANCERS"
 
+	//if type is not important or just want to test connection
+	TEST MessageType = "TEST"
+
 	UNKNOWN MessageType = "UNKNOWN"
 )
 

@@ -49,7 +49,8 @@ type MsInfo struct {
 	//TODO: later make this a serviceType not string
 	Type ServiceType
 
-	status NodeStatus
+	LastHeartbeat time.Time
+	Status        NodeStatus
 
 	Cmd *exec.Cmd `json:"-"`
 

@@ -121,6 +121,24 @@ func (lb *LoadBalancer) handleConnection(nc net.Conn) {
 						break
 					}
 
+					//send test message to check if ms works
+					msConn := lb.msConn[ms.ID]
+					resp, err := msConn.SendRequest(protocol.Message{
+						ID:   crypto.GenerateID(crypto.MESSAGE_ID),
+						Type: protocol.TEST,
+					})
+
+					if err != nil || resp.Code != protocol.SUCCESS {
+						response = protocol.Message{
+							ID:           request.ID,
+							Type:         protocol.UPDATE,
+							ConnectionID: request.ConnectionID,
+							Code:         protocol.ERROR,
+							Content:      err.Error(),
+						}
+						break
+					}
+
 					lb.msInfo[ms.Type] = append(lb.msInfo[ms.Type], ms)
 					log["console"].Debug("Successfully added ms to register %v:%v type:%v\n", ms.Host, ms.Port, ms.Type)
 				}
@@ -304,7 +322,6 @@ func (lb *LoadBalancer) connectToMicroservice(ms *protocol.MsInfo) error {
 				lb.msConn[ms.ID] = conn
 				lb.RWmu.Unlock()
 
-				//go conn.ReceiveLoopNew(lb)
 				go conn.ReceiveLoopNew(lb)
 
 				log["console"].Info("Connected to microservice: %s", address)
@@ -327,6 +344,10 @@ func (lb *LoadBalancer) AsyncEvent(request protocol.Message, conn *protocol.Conn
 		log["console"].Error("Unsupported NodeAsyncEvent type: %s", request.Type)
 	}
 
+}
+
+func (lb *LoadBalancer) String() string {
+	return "LoadBalancer"
 }
 
 // ################################# NODE METHODS #################################

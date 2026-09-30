@@ -238,6 +238,10 @@ func (c *Controller) AsyncEvent(msg protocol.Message, conn *protocol.Connection)
 
 }
 
+func (c *Controller) String() string {
+	return "Controller"
+}
+
 // ################################## CORE FUNCTIONS #####################################
 
 // #################################  API FUNCTIONS ################################
@@ -404,7 +408,7 @@ func (c *Controller) connectToAgent(agent *protocol.AgentInfo) (*protocol.Connec
 
 				conn := protocol.NewConnection(nc)
 				c.Register(conn, protocol.ConnAgent, agent.ID)
-				c.updateAgentHeartbeat(conn.ID)
+				//c.updateAgentHeartbeat(conn.ID)
 
 				return conn, nil
 			}
@@ -634,7 +638,7 @@ func (c *Controller) updateLBHeartbeat(id string) {
 		lb.LastHeartbeat = time.Now()
 		lb.Status = protocol.Healthy
 		lb.Mu.Unlock()
-		log["console"].Debug("Received from lb %v last heartbeat is %v", lb.ID, lb.LastHeartbeat)
+		log["console"].Debug("LoadBalancer %v heartbeat is %v", lb.ID, lb.LastHeartbeat)
 
 	} else {
 		log["console"].Error("Unknown lb in connection: %v", c.agentsConn[lb.ID])

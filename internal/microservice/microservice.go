@@ -4,10 +4,12 @@ import (
 	"bufio"
 	"fmt"
 	"net"
+	crypto "networking/tcp/internal/cryptography"
 	"networking/tcp/internal/logger"
 	"networking/tcp/internal/protocol"
 	"os"
 	"strings"
+	"time"
 )
 
 var log logger.Loggers = logger.NewLoggers(
@@ -20,7 +22,9 @@ var log logger.Loggers = logger.NewLoggers(
 
 type Microservice struct {
 	//TODO?: maybe later change this to Connection or list of them
-	RW *bufio.ReadWriter
+	RW        *bufio.ReadWriter
+	LbConn    *protocol.Connection
+	agentConn *protocol.Connection
 
 	listener net.Listener
 	Service  Service
@@ -63,18 +67,40 @@ func (ms *Microservice) acceptConnections() {
 		log["console"].Info("accepted new connection")
 
 		//use go rutine to handle every connection async
-		go ms.Work(nc)
+		go ms.handleConnection(nc)
 	}
 }
 
-func (ms *Microservice) Work(nc net.Conn) {
-	reader := bufio.NewReader(nc)
-	writer := bufio.NewWriter(nc)
+func (ms *Microservice) handleConnection(nc net.Conn) {
+	conn := protocol.NewConnection(nc)
 
-	ms.RW = bufio.NewReadWriter(reader, writer)
+	//TODO: something is wrong with getting first request, brakes code, fix this and in work
+	msg, err := protocol.Receive(conn.RW.Reader)
+	if err != nil {
+		log["console"].Error("Error while receiving message from connection: %v", err)
+	}
 
+	log["console"].Debug("got message %v", msg)
+
+	protocol.Send(conn.RW.Writer, protocol.Message{
+		ID:   msg.ID,
+		Type: msg.Type,
+		Code: protocol.SUCCESS,
+	})
+
+	if msg.Type == protocol.HEARTBEAT {
+		log["console"].Debug("Found Agent!!!!!!!!!!!!!!! %v", msg)
+		ms.agentConn = conn
+		go ms.SendHeartBeat(conn)
+	} else {
+		ms.LbConn = conn
+		go ms.Work(conn)
+	}
+}
+
+func (ms *Microservice) Work(conn *protocol.Connection) {
 	for {
-		request, err := protocol.Receive(ms.RW.Reader)
+		request, err := protocol.Receive(ms.LbConn.RW.Reader)
 		if err != nil {
 			log["console"].Error("reading request error %w", err)
 			return
@@ -96,7 +122,7 @@ func (ms *Microservice) Work(nc net.Conn) {
 				Content:      errStr,
 			}
 
-			if err := protocol.Send(ms.RW.Writer, response); err != nil {
+			if err := protocol.Send(ms.LbConn.RW.Writer, response); err != nil {
 				log["console"].Error("Error while sending response: %v", err)
 			}
 
@@ -105,5 +131,23 @@ func (ms *Microservice) Work(nc net.Conn) {
 		}
 
 		//message that work has ended
+	}
+}
+
+func (ms *Microservice) SendHeartBeat(conn *protocol.Connection) {
+	msg := protocol.Message{
+		Type: protocol.HEARTBEAT,
+	}
+
+	for {
+		time.Sleep(5 * time.Second)
+
+		msg.ID = crypto.GenerateID(crypto.MESSAGE_ID)
+		if err := protocol.Send(conn.RW.Writer, msg); err != nil {
+			log["console"].Error("Error accured when trying to send heart beat to agent %v", err)
+			continue
+		}
+
+		log["console"].Debug("Sent HeartBeat to Agent %v", msg)
 	}
 }

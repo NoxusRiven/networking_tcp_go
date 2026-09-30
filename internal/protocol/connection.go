@@ -21,8 +21,8 @@ const (
 type Connection struct {
 	ID string
 
-	Conn net.Conn
-	RW   *bufio.ReadWriter
+	Nc net.Conn
+	RW *bufio.ReadWriter
 
 	pending map[string]chan Message
 
@@ -34,7 +34,7 @@ type Connection struct {
 
 func NewConnection(nc net.Conn) *Connection {
 	return &Connection{
-		Conn:    nc,
+		Nc:      nc,
 		pending: make(map[string]chan Message),
 		RW: bufio.NewReadWriter(
 			bufio.NewReader(nc),
@@ -45,7 +45,7 @@ func NewConnection(nc net.Conn) *Connection {
 
 func (c *Connection) Close() {
 	c.closeOnce.Do(func() {
-		c.Conn.Close()
+		c.Nc.Close()
 	})
 }
 
@@ -136,7 +136,7 @@ func (c *Connection) ReceiveLoopNew(node Node) {
 			return
 		}
 
-		fmt.Println("Received message:", msg)
+		fmt.Println("Received message:", msg, "by node:", node.String())
 		if ch, ok := c.pending[msg.ID]; ok {
 
 			ch <- msg
