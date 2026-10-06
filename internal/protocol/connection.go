@@ -72,6 +72,27 @@ func (c *Connection) ReceiveLoop(node Node) {
 		default:
 			go node.AsyncEvent(msg, c)
 		}
+
+		//this can be 100% simplified with some if statments and no switch
+		//TODO: use it after refactoring node
+
+		// var nodeB any = NodeBase{}
+		// worker, okW := nodeB.(WorkerNode)
+		// manager, okM := nodeB.(ManagerNode)
+
+		// if !okW && !okM {
+		// 	continue
+		// }
+		// switch msg.Type {
+		// case HEARTBEAT:
+		// 	if okM {
+		// 		go manager.ReceiveHeartBeat(msg, c)
+		// 	}
+		// default:
+		// 	if okW {
+		// 		go worker.AsyncEvent(msg, c)
+		// 	}
+		// }
 	}
 }
 

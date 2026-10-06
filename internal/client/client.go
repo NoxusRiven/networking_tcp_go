@@ -126,7 +126,7 @@ func (c *CLI) HandleExit() {
 // ################################ NODE METHODS ################################
 
 func (c *CLI) ReceiveHeartBeat(msg protocol.Message, conn *protocol.Connection) {
-	// client doesnt get heartbeat checks
+	// client doesnt receive heartbeat checks
 }
 
 func (c *CLI) AsyncEvent(msg protocol.Message, conn *protocol.Connection) {

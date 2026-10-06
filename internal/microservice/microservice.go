@@ -145,7 +145,7 @@ func (ms *Microservice) SendHeartBeat(conn *protocol.Connection) {
 		msg.ID = crypto.GenerateID(crypto.MESSAGE_ID)
 		if err := protocol.Send(conn.RW.Writer, msg); err != nil {
 			log["console"].Error("Error accured when trying to send heart beat to agent %v", err)
-			continue
+			break
 		}
 
 		log["console"].Debug("Sent HeartBeat to Agent %v", msg)

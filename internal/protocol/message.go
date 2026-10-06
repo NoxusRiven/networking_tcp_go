@@ -29,7 +29,7 @@ const (
 	// system
 	CREATE  MessageType = "CREATE"
 	DESTROY MessageType = "DESTROY"
-	RESET   MessageType = "RESET"
+	RECOVER MessageType = "RECOVER"
 	//update can be used for many things based on context of node using it and content of message
 	UPDATE    MessageType = "UPDATE"
 	RAPORT    MessageType = "RAPORT"
@@ -107,12 +107,4 @@ func Receive(reader *bufio.Reader) (Message, error) {
 	err = json.Unmarshal(raw, &msg)
 
 	return msg, err
-}
-
-func DecodeContent(content any, out any) error {
-	raw, err := json.Marshal(content)
-	if err != nil {
-		return err
-	}
-	return json.Unmarshal(raw, out)
 }

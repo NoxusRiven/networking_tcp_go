@@ -66,10 +66,16 @@ func (lb *LoadBalancer) Start() {
 func (lb *LoadBalancer) handleConnection(nc net.Conn) {
 	conn := protocol.NewConnection(nc)
 
+	conn.Mu.Lock()
 	lb.apiConn[conn.ID] = conn
+	conn.Mu.Unlock()
 
-	defer delete(lb.apiConn, conn.ID)
-	defer conn.Close()
+	defer func() {
+		conn.Mu.Lock()
+		delete(lb.apiConn, conn.ID)
+		conn.Close()
+		conn.Mu.Unlock()
+	}()
 
 	for {
 		request, err := protocol.Receive(conn.RW.Reader)

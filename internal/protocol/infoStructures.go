@@ -1,7 +1,7 @@
 package protocol
 
 import (
-	"os/exec"
+	"os"
 	"sync"
 	"time"
 )
@@ -34,7 +34,7 @@ type AgentInfo struct {
 
 	Microservices map[ServiceType][]*MsInfo
 
-	Cmd *exec.Cmd
+	Process *os.Process
 
 	Mu sync.RWMutex // protects mutable fields
 }
@@ -42,6 +42,8 @@ type AgentInfo struct {
 type MsInfo struct {
 	ID     string
 	NodeID string
+
+	PID int
 
 	Host string
 	Port string
@@ -52,7 +54,7 @@ type MsInfo struct {
 	LastHeartbeat time.Time
 	Status        NodeStatus
 
-	Cmd *exec.Cmd `json:"-"`
+	Process *os.Process `json:"-"`
 
 	Mu sync.RWMutex `json:"-"` // protects mutable fields
 }
@@ -69,7 +71,7 @@ type LBalancerInfo struct {
 
 	Microservices map[ServiceType][]*MsInfo
 
-	Cmd *exec.Cmd `json:"-"`
+	Process *os.Process `json:"-"`
 
 	Mu sync.RWMutex `json:"-"` // protects mutable fields
 }
@@ -78,16 +80,16 @@ func (a *AgentInfo) Close() {
 	a.Mu.Lock()
 	defer a.Mu.Unlock()
 
-	if a.Cmd.Process != nil {
-		a.Cmd.Process.Kill()
-		a.Cmd = nil
+	if a.Process != nil {
+		a.Process.Kill()
+		a.Process = nil
 	}
 }
 
 func (ms *MsInfo) Close() {
 
-	if ms.Cmd.Process != nil {
-		ms.Cmd.Process.Kill()
-		ms.Cmd = nil
+	if ms.Process != nil {
+		ms.Process.Kill()
+		ms.Process = nil
 	}
 }

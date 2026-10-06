@@ -248,6 +248,9 @@ func (api *APIGateway) handleClient(cliConn *protocol.Connection) {
 		}
 
 		lb := api.findLbForRequest(request)
+		if lb == nil {
+			return
+		}
 
 		api.requestChannelMap[lb.ID] <- reqPool
 

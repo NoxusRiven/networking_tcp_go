@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	crypto "networking/tcp/internal/cryptography"
+	json "networking/tcp/internal/json_helper"
 	"networking/tcp/internal/logger"
 	"networking/tcp/internal/platform"
 	"networking/tcp/internal/protocol"
@@ -125,14 +126,16 @@ func (a *Agent) createMicroservice(host string, port string, ms_type string) (*p
 	log["console"].Info("ms %s process started successfully! Pid: %d", ms_type, cmd.Process.Pid)
 
 	ms := &protocol.MsInfo{
-		ID:   crypto.GenerateID(crypto.INSTANCE_NODE),
-		Host: host,
-		Port: port,
-		Type: protocol.ServiceType(ms_type),
+		ID:      crypto.GenerateID(crypto.INSTANCE_NODE),
+		PID:     cmd.Process.Pid,
+		Host:    host,
+		Port:    port,
+		Process: cmd.Process,
+		Type:    protocol.ServiceType(ms_type),
 	}
 
 	//check if connection works
-	msConn, err := a.handleMicroserviceConnection(ms)
+	msConn, err := a.connectToMicroservice(ms)
 	if err != nil {
 		return nil, logger.StrToErrorNew(log, "Error while handling ms connection: %v", err)
 	}
@@ -148,15 +151,15 @@ func (a *Agent) createMicroservice(host string, port string, ms_type string) (*p
 
 func (a *Agent) KillAllMS() {
 	for _, ms := range a.msInfo {
-		if ms == nil || ms.Cmd == nil || ms.Cmd.Process == nil {
+		if ms == nil || ms.Process == nil {
 			continue
 		}
-		ms.Cmd.Process.Kill()
+		ms.Process.Kill()
 
 	}
 }
 
-func (a *Agent) handleMicroserviceConnection(ms *protocol.MsInfo) (*protocol.Connection, error) {
+func (a *Agent) connectToMicroservice(ms *protocol.MsInfo) (*protocol.Connection, error) {
 
 	var nc net.Conn
 	var err error
@@ -184,6 +187,68 @@ func (a *Agent) handleMicroserviceConnection(ms *protocol.MsInfo) (*protocol.Con
 	return msConn, nil
 }
 
+func (a *Agent) handleCreate(request protocol.Message) protocol.Message {
+	serviceType := request.Content.(string) // e.g. "PING" — controller sends type in Content
+	a.RWmu.Lock()
+	port := a.GetNextPort()
+	a.RWmu.Unlock()
+
+	ms, err := a.createMicroservice("localhost", port, serviceType)
+	if err != nil {
+		return protocol.Message{
+			ID: request.ID, Type: protocol.CREATE, Code: protocol.ERROR, Content: err.Error(),
+		}
+	}
+
+	return protocol.Message{
+		ID: request.ID, Type: protocol.CREATE, Code: protocol.SUCCESS,
+		Content: net.JoinHostPort(ms.Host, ms.Port),
+	}
+}
+
+func (a *Agent) handleRecover(request protocol.Message) protocol.Message {
+	var services map[protocol.ServiceType][]*protocol.MsInfo
+
+	log["console"].Debug("ms string: %v", request.Content)
+	err := json.DecodeContent(request.Content, &services)
+	if err != nil {
+		return protocol.Message{
+			ID:      request.ID,
+			Type:    request.Type,
+			Code:    protocol.ERROR,
+			Content: err.Error(),
+		}
+	}
+
+	for _, mses := range services {
+		for _, ms := range mses {
+			msConn, err := a.connectToMicroservice(ms)
+			if err != nil {
+				log["console"].Error("connecting to ms %v: %v", ms, err)
+				continue
+			}
+
+			msConn.Mu.Lock()
+			a.msInfo[msConn.ID] = ms
+			a.msConn[ms.ID] = msConn
+			msConn.Mu.Unlock()
+
+			if ms.Process, err = os.FindProcess(ms.PID); err != nil {
+				log["console"].Error("Finding ms process PID %v: %v", ms.PID, err)
+				continue
+			}
+
+			log["console"].Debug("Successfully recovered connection to ms %v", ms)
+		}
+	}
+
+	return protocol.Message{
+		ID:   request.ID,
+		Type: request.Type,
+		Code: protocol.SUCCESS,
+	}
+}
+
 // ################################# NODE METHODS #################################
 
 func (a *Agent) ReceiveHeartBeat(msg protocol.Message, conn *protocol.Connection) {
@@ -209,23 +274,9 @@ func (a *Agent) AsyncEvent(request protocol.Message, conn *protocol.Connection) 
 
 	switch request.Type {
 	case protocol.CREATE:
-		serviceType := request.Content.(string) // e.g. "PING" — controller sends type in Content
-		a.RWmu.Lock()
-		port := a.GetNextPort()
-		a.RWmu.Unlock()
-
-		ms, err := a.createMicroservice("localhost", port, serviceType)
-		if err != nil {
-			response = protocol.Message{
-				ID: request.ID, Type: protocol.CREATE, Code: protocol.ERROR, Content: err.Error(),
-			}
-			break
-		}
-
-		response = protocol.Message{
-			ID: request.ID, Type: protocol.CREATE, Code: protocol.SUCCESS,
-			Content: net.JoinHostPort(ms.Host, ms.Port),
-		}
+		response = a.handleCreate(request)
+	case protocol.RECOVER:
+		response = a.handleRecover(request)
 
 	default:
 		response = protocol.Message{
