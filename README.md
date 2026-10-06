@@ -7,10 +7,12 @@ Also learning GO lang while making this project
 # Usage
 - build agent, loadbalancer and microservice nodes via build.bat/.sh
 - run files in order:
-    * controller
-    * api
-    * cli
+    * cmd/controller
+    * cmd/api
+    * cmd/cli
 
-This system allows for multiple cli instances
+This system allows for multiple cli instances, servers will work concurrently
 
-Only supported feature for now is Ping, pings the server and server responds with current timestamp
+Supported features are: 
+- Ping, pings the server, server responds with current timestamp
+- Idle work, stream of 10 messages sent by server with intervals of 2 seconds
