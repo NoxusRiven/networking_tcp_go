@@ -32,7 +32,7 @@ func (c *CLI) Run(host string, port string) error {
 	c.conn = protocol.NewConnection(nc)
 	defer c.conn.Close()
 
-	go c.conn.ReceiveLoopNew(c)
+	go c.conn.ReceiveLoopChan(c)
 
 	c.isRunning = true
 
@@ -78,7 +78,7 @@ func (c *CLI) HandlePing() {
 		Type: "PING",
 	}
 
-	respChan, err := c.conn.SendRequestNew(msg)
+	respChan, err := c.conn.SendRequestChan(msg)
 	if err != nil {
 		fmt.Println("[ERROR]: Error while seding message to API", err)
 
@@ -97,7 +97,7 @@ func (c *CLI) HandleIdle() {
 		Type: "IDLE",
 	}
 
-	respChan, err := c.conn.SendRequestNew(msg)
+	respChan, err := c.conn.SendRequestChan(msg)
 	if err != nil {
 		fmt.Println("[ERROR]: Problem accured when SendRequestNew returned channel:", err)
 

@@ -89,22 +89,29 @@ func (ms *Microservice) handleConnection(nc net.Conn) {
 	})
 
 	if msg.Type == protocol.HEARTBEAT {
-		log["console"].Debug("Found Agent!!!!!!!!!!!!!!! %v", msg)
 		ms.agentConn = conn
 		go ms.SendHeartBeat(conn)
 	} else {
 		ms.LbConn = conn
+
+		log["console"].Debug("In work scope")
+
 		go ms.Work(conn)
 	}
 }
 
 func (ms *Microservice) Work(conn *protocol.Connection) {
+
+	log["console"].Debug("Started working...")
 	for {
+
+		log["console"].Debug("In a for loop")
 		request, err := protocol.Receive(ms.LbConn.RW.Reader)
 		if err != nil {
 			log["console"].Error("reading request error %w", err)
 			return
 		}
+		log["console"].Debug("after receiving request")
 
 		log["console"].Debug("received request: %s", request)
 
@@ -147,7 +154,5 @@ func (ms *Microservice) SendHeartBeat(conn *protocol.Connection) {
 			log["console"].Error("Error accured when trying to send heart beat to agent %v", err)
 			break
 		}
-
-		log["console"].Debug("Sent HeartBeat to Agent %v", msg)
 	}
 }

@@ -59,6 +59,16 @@ func (c *Connection) ReceiveLoop(node Node) {
 			return
 		}
 
+		connID := fmt.Sprintf(
+			"%s -> %s",
+			c.Nc.LocalAddr(),
+			c.Nc.RemoteAddr(),
+		)
+
+		fmt.Printf("[Receive loop][DEBUG][CONN %s]\n",
+			connID,
+		)
+
 		if ch, ok := c.pending[msg.ID]; ok {
 			ch <- msg
 			//fmt.Println("[Receive Loop]: received and deleting", msg.ID)
@@ -103,7 +113,7 @@ func (c *Connection) SendRequest(msg Message) (Message, error) {
 
 	c.Mu.Lock()
 	c.pending[msg.ID] = ch
-	fmt.Println("[Send Request] started pending on key", msg.ID)
+	fmt.Println("[Send Request] started pending on key", msg.ID, "and conn(ID-", c.ID, ", LocAddr", c.Nc.LocalAddr())
 	c.Mu.Unlock()
 
 	fmt.Println("[Send Request] full message: ", msg)
@@ -123,14 +133,14 @@ func (c *Connection) SendRequest(msg Message) (Message, error) {
 	}
 }
 
-func (c *Connection) SendRequestNew(msg Message) (<-chan Message, error) {
+func (c *Connection) SendRequestChan(msg Message) (<-chan Message, error) {
 	msg.ID = crypto.GenerateID(4)
 
 	ch := make(chan Message, 8)
 
 	c.Mu.Lock()
 	c.pending[msg.ID] = ch
-	fmt.Println("[Send Request] active channel on key", msg.ID)
+	fmt.Println("[Send Request] started pending on key", msg.ID, "and conn(ID-", c.ID, ", LocAddr", c.Nc.LocalAddr())
 	c.Mu.Unlock()
 
 	fmt.Println("[Send Request] full message: ", msg)
@@ -148,7 +158,7 @@ func (c *Connection) SendRequestNew(msg Message) (<-chan Message, error) {
 	return ch, nil
 }
 
-func (c *Connection) ReceiveLoopNew(node Node) {
+func (c *Connection) ReceiveLoopChan(node Node) {
 	for {
 		msg, err := Receive(c.RW.Reader)
 		if err != nil {

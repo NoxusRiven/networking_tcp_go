@@ -225,7 +225,7 @@ func (a *Agent) handleRecover(request protocol.Message) protocol.Message {
 			msConn, err := a.connectToMicroservice(ms)
 			if err != nil {
 				log["console"].Error("connecting to ms %v: %v", ms, err)
-				continue
+				break
 			}
 
 			msConn.Mu.Lock()
@@ -235,7 +235,7 @@ func (a *Agent) handleRecover(request protocol.Message) protocol.Message {
 
 			if ms.Process, err = os.FindProcess(ms.PID); err != nil {
 				log["console"].Error("Finding ms process PID %v: %v", ms.PID, err)
-				continue
+				break
 			}
 
 			log["console"].Debug("Successfully recovered connection to ms %v", ms)
@@ -254,17 +254,15 @@ func (a *Agent) handleRecover(request protocol.Message) protocol.Message {
 func (a *Agent) ReceiveHeartBeat(msg protocol.Message, conn *protocol.Connection) {
 	a.RWmu.Lock()
 	defer a.RWmu.Unlock()
-	log["console"].Debug("conn id: %v", conn.ID)
 	if ms, ok := a.msInfo[conn.ID]; ok {
-		log["console"].Debug("Microservice %v heartbeat was %v", ms.ID, ms.LastHeartbeat)
 		ms.Mu.Lock()
 		ms.LastHeartbeat = time.Now()
 		ms.Status = protocol.Healthy
 		ms.Mu.Unlock()
-		log["console"].Debug("Microservice %v heartbeat is %v", ms.ID, ms.LastHeartbeat)
+		//log["console"].Debug("Microservice %v heartbeat is %v", ms.ID, ms.LastHeartbeat)
 
 	} else {
-		log["console"].Error("Unknown agent in connection with id: %v", conn.ID)
+		log["console"].Error("Unknown microservice in connection with id: %v", conn.ID)
 	}
 }
 
@@ -280,7 +278,7 @@ func (a *Agent) AsyncEvent(request protocol.Message, conn *protocol.Connection) 
 
 	default:
 		response = protocol.Message{
-			ID: request.ID, Type: protocol.CREATE, Code: protocol.ERROR, Content: "unknown command: " + string(request.Type),
+			ID: request.ID, Type: request.Type, Code: protocol.ERROR, Content: "unknown async command: " + string(request.Type),
 		}
 	}
 

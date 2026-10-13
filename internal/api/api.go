@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -104,7 +105,7 @@ func (api *APIGateway) Start(controllerAddr string) error {
 
 func (api *APIGateway) RegisterToController(conn *protocol.Connection) error {
 
-	respChan, err := conn.SendRequestNew(protocol.Message{
+	respChan, err := conn.SendRequestChan(protocol.Message{
 		Type: protocol.REG_API,
 	})
 	resp := <-respChan
@@ -148,36 +149,59 @@ func (api *APIGateway) syncLoadBalancers(msg protocol.Message) error {
 
 	// for every loadbalancer start CONNECTION_NUM of connections
 	for _, lb := range lbList {
-		api.requestChannelMap[lb.ID] = make(chan *MessageExchange, CONNECTION_NUM)
+
+		//if connections exists, dont create new MsgExchnge and delete previous data
+		conns, okConn := api.lbConn[lb.ID]
+		var conn *protocol.Connection
+		if !okConn {
+			log["console"].Debug("####### creating new MsgExchnge ########")
+			api.requestChannelMap[lb.ID] = make(chan *MessageExchange, CONNECTION_NUM)
+		}
 
 		for i := 0; i < CONNECTION_NUM; i++ {
 
 			//TODO? maybe isolate this logic into method
-
 			nc, err := net.Dial("tcp", net.JoinHostPort(lb.Host, lb.Port))
 			if err != nil {
 				log["console"].Error("Error connecting to loadbalancer %s:%s, error: %v", lb.Host, lb.Port, err)
 				continue
 			}
 
-			conn := protocol.NewConnection(nc)
+			if !okConn {
+				conn = protocol.NewConnection(nc)
+				conn.ID = crypto.GenerateID(crypto.CONN)
 
-			go conn.ReceiveLoopNew(api)
+			} else {
+				//Just swap net.Conn, meta Connection data remains the same
+				conn = conns[i]
+				conn.Nc.Close()
+
+				conn.Nc = nc
+				RW := bufio.NewReadWriter(
+					bufio.NewReader(nc),
+					bufio.NewWriter(nc),
+				)
+				conn.RW = RW
+			}
+
+			go conn.ReceiveLoopChan(api)
 
 			//? maybe if conn to lb isnt working return and mark it as unhealty, and dont check other connection (also send info to controller about it)
 
 			//test if every connection works
-			respChan, err := conn.SendRequestNew(protocol.Message{
+			respChan, err := conn.SendRequestChan(protocol.Message{
 				Type: protocol.HEARTBEAT,
 			})
 
 			if err != nil {
 				log["console"].Error("Error while sending request %v", err)
+				continue
 			}
 			resp, ok := <-respChan
 
 			if !ok {
 				log["console"].Error("Channel closed")
+				continue
 			}
 
 			if resp.Code != protocol.SUCCESS {
@@ -185,13 +209,13 @@ func (api *APIGateway) syncLoadBalancers(msg protocol.Message) error {
 				continue
 			}
 
-			log["console"].Debug("Response from loadbalancer %s:%s on %s connID: %v", lb.Host, lb.Port, conn.ID, resp)
-
 			//successfully connected to lb, now map them to thier data structures
-			conn.ID = crypto.GenerateID(crypto.CONN)
+			log["console"].Debug("Response from loadbalancer %s:%s on conn(ID-%s, LocAddr-%s): %v", lb.Host, lb.Port, conn.ID, conn.Nc.LocalAddr(), resp)
 
-			api.lbInfo[conn.ID] = lb
-			api.lbConn[lb.ID] = append(api.lbConn[lb.ID], conn)
+			if !okConn {
+				api.lbInfo[conn.ID] = lb
+				api.lbConn[lb.ID] = append(api.lbConn[lb.ID], conn)
+			}
 
 			go api.messageWorker(conn)
 		}
@@ -205,14 +229,20 @@ func (api *APIGateway) messageWorker(conn *protocol.Connection) {
 
 	//var err error
 	for msgEx := range api.requestChannelMap[lb.ID] {
+		_, ok := api.lbInfo[conn.ID]
+		if !ok {
+			log["console"].Debug("None existant connectionconn =  - stopping messageWroker\n")
+			return
+		}
+
 		req := msgEx.request
 		log["console"].Debug("Message worker got request: %v", req)
 
-		respChan, err := conn.SendRequestNew(req)
+		respChan, err := conn.SendRequestChan(req)
 
 		if err != nil {
-			log["console"].Error("Error receiving message channel from loadbalancer on %s connID, error: %v", conn.ID, err)
-			continue
+			log["console"].Error("Error receiving message channel from loadbalancer on connID %s, error: %v", conn.ID, err)
+			return
 		}
 
 		go func(msgEx *MessageExchange, respChan <-chan protocol.Message) {
@@ -293,7 +323,7 @@ func (api *APIGateway) findLbForRequest(request protocol.Message) *protocol.LBal
 	log["console"].Debug("Found lb :%v", lb)
 
 	if lb == nil {
-		respChan, err := api.controllerConn.SendRequestNew(protocol.Message{
+		respChan, err := api.controllerConn.SendRequestChan(protocol.Message{
 			Type:    protocol.CREATE,
 			Content: string(request.Type),
 		})
@@ -305,6 +335,8 @@ func (api *APIGateway) findLbForRequest(request protocol.Message) *protocol.LBal
 			log["console"].Error("Error while sending request to controller to create %v ms for request: %v", request.Content, err)
 			return nil
 		}
+
+		//api.update
 		if resp.Type != protocol.UPDATE {
 			log["console"].Error("Controller responsed with type %d to  request for creating %v ms, response: %v", resp.Type, request.Content, resp)
 			return nil
@@ -344,11 +376,12 @@ func (api *APIGateway) ReceiveHeartBeat(msg protocol.Message, conn *protocol.Con
 
 func (api *APIGateway) AsyncEvent(msg protocol.Message, conn *protocol.Connection) {
 	switch msg.Type {
-	case protocol.UPDATE: //? lb_sync might not be needed if api receives async update it comes from controller
-		//case protocol.LB_SYNC:
-		api.syncLoadBalancers(msg)
+	case protocol.UPDATE:
+		log["console"].Debug("Got update async event")
+		if err := api.syncLoadBalancers(msg); err != nil {
+			log["console"].Error("Async event: ", err)
+		}
 	default:
-		//log["console"].Error("Unsupported NodeAsyncEvent type: %s", msg.Type)
 		log["console"].Debug("Forwarding to Client %v", msg)
 	}
 }
