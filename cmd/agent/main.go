@@ -11,10 +11,12 @@ import (
 
 func main() {
 	var port int
+	var nodeID string
 	flag.IntVar(&port, "port", 2222, "Port that will be used by agent")
+	flag.StringVar(&nodeID, "nodeID", "no-node-id-set", "Id of node cluster that agent is in")
 	flag.Parse()
 
-	agent, err := agent.NewAgent(fmt.Sprintf(":%d", port))
+	agent, err := agent.NewAgent(fmt.Sprintf(":%d", port), nodeID)
 	if err != nil {
 		fmt.Println("Error while creating agent", err)
 	}

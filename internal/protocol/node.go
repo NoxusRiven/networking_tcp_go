@@ -2,9 +2,11 @@ package protocol
 
 //TODO: lil rework should be done to this idea
 //! old interface
+
 type Node interface {
 	ReceiveHeartBeat(Message, *Connection)
 	AsyncEvent(Message, *Connection)
+	HandShake(*Connection)
 	String() string
 }
 

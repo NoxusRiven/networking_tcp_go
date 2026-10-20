@@ -50,7 +50,7 @@ type APIGateway struct {
 
 // ##################################### STRUCTURES #####################################
 
-// ################################## FUNCTIONS #####################################
+// ################################## CORE #####################################
 
 func NewAPIGateway(port uint32) (*APIGateway, error) {
 	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
@@ -81,7 +81,7 @@ func (api *APIGateway) Start(controllerAddr string) error {
 	api.controllerConn = protocol.NewConnection(nc)
 	defer api.controllerConn.Close()
 
-	go api.controllerConn.ReceiveLoop(api)
+	go api.controllerConn.ReceiveLoopChan(api)
 
 	err = api.RegisterToController(api.controllerConn)
 	if err != nil {
@@ -106,24 +106,29 @@ func (api *APIGateway) Start(controllerAddr string) error {
 func (api *APIGateway) RegisterToController(conn *protocol.Connection) error {
 
 	respChan, err := conn.SendRequestChan(protocol.Message{
-		Type: protocol.REG_API,
+		Type:    protocol.HELLO,
+		Content: api.String(),
 	})
-	resp := <-respChan
+	respHello := <-respChan
 
 	if err != nil {
 		return err
 	}
-	if resp.Code != protocol.SUCCESS {
-		return logger.StrToErrorNew(log, "Controller responsed with error code %d when registering api", resp.Code)
+	if respHello.Type != protocol.HELLO || respHello.Code != protocol.SUCCESS || respHello.Content != "CONTROLLER" {
+		return logger.StrToErrorNew(log, "Controller responsed with %v during handshake with api", respHello)
 	}
+
+	log["console"].Debug("Registered succesfully %v", respHello)
+
+	respSync := <-respChan
 
 	// first sync will happend after registration, every other will happen asynchronously
-	err = api.syncLoadBalancers(resp)
+	err = api.syncLoadBalancers(respSync)
 	if err != nil {
 		return err
 	}
 
-	log["console"].Debug("Response from controller after registering %s", resp)
+	log["console"].Debug("Sync response from controller %v", respSync)
 
 	return nil
 }
@@ -154,7 +159,7 @@ func (api *APIGateway) syncLoadBalancers(msg protocol.Message) error {
 		conns, okConn := api.lbConn[lb.ID]
 		var conn *protocol.Connection
 		if !okConn {
-			log["console"].Debug("####### creating new MsgExchnge ########")
+			log["console"].Debug("creating new MsgExchnge")
 			api.requestChannelMap[lb.ID] = make(chan *MessageExchange, CONNECTION_NUM)
 		}
 
@@ -190,7 +195,8 @@ func (api *APIGateway) syncLoadBalancers(msg protocol.Message) error {
 
 			//test if every connection works
 			respChan, err := conn.SendRequestChan(protocol.Message{
-				Type: protocol.HEARTBEAT,
+				Type:    protocol.HELLO,
+				Content: api.String(),
 			})
 
 			if err != nil {
@@ -370,6 +376,17 @@ func (api *APIGateway) findLbForRequest(request protocol.Message) *protocol.LBal
 
 }
 
+// ##################################### CORE #####################################
+
+// ################################# NODE METHODS #################################
+func (api *APIGateway) HandShake(conn *protocol.Connection) {
+	//api.lbInfo[conn.ID] = lb
+	//api.lbConn[lb.ID] = append(api.lbConn[lb.ID], conn)
+
+	go conn.ReceiveLoop(api)
+	go api.messageWorker(conn)
+}
+
 func (api *APIGateway) ReceiveHeartBeat(msg protocol.Message, conn *protocol.Connection) {
 
 }
@@ -382,7 +399,9 @@ func (api *APIGateway) AsyncEvent(msg protocol.Message, conn *protocol.Connectio
 			log["console"].Error("Async event: ", err)
 		}
 	default:
-		log["console"].Debug("Forwarding to Client %v", msg)
+		//log["console"].Debug("Forwarding to Client %v", msg)
+
+		log["console"].Error("Unsuported async msg: %v", msg)
 	}
 }
 
@@ -390,4 +409,4 @@ func (api *APIGateway) String() string {
 	return "API"
 }
 
-// ##################################### FUNCTIONS #####################################
+// ################################# NODE METHODS #################################

@@ -63,18 +63,8 @@ func (lb *LoadBalancer) Start() {
 
 func (lb *LoadBalancer) handleConnection(nc net.Conn) {
 
-	connID := fmt.Sprintf(
-		"%s -> %s",
-		nc.LocalAddr(),
-		nc.RemoteAddr(),
-	)
-
-	log["console"].Debug(
-		"[CONN %s] handleConnection START",
-		connID,
-	)
-
 	requestPtr, conn := lb.registerConnection(nc)
+	//error accured or controller connected
 	if requestPtr == nil || conn == nil {
 		return
 	}
@@ -103,12 +93,22 @@ func (lb *LoadBalancer) registerConnection(nc net.Conn) (*protocol.Message, *pro
 		return nil, nil
 	}
 
-	if str, ok := request.Content.(string); ok && str == "CONTROLLER" {
-		log["console"].Debug("Got controller connection!!! conn: %v", (conn.Nc.LocalAddr().String() + " -> " + conn.Nc.RemoteAddr().String()))
+	if request.Type == protocol.HELLO && request.Content == "CONTROLLER" {
+		log["console"].Debug("Got controller connection, conn: %v", (conn.Nc.LocalAddr().String() + " -> " + conn.Nc.RemoteAddr().String()))
 
 		go conn.ReceiveLoop(lb)
 
 		go lb.SendHeartBeat(conn)
+
+		if err := protocol.Send(conn.RW.Writer, protocol.Message{
+			ID:      request.ID,
+			Type:    request.Type,
+			Code:    protocol.SUCCESS,
+			Content: lb.String(),
+		}); err != nil {
+			log["console"].Error("Send handshake: %v", err)
+			conn.Close()
+		}
 		return nil, nil
 	}
 
@@ -125,9 +125,9 @@ func (lb *LoadBalancer) handleRequest(request protocol.Message, conn *protocol.C
 		log["console"].Debug("Got recover message %v", request)
 		response = protocol.Message{ID: request.ID, Type: request.Type, Code: protocol.SUCCESS}
 
-	case protocol.HEARTBEAT:
-		log["console"].Debug("Received heartbeat message")
-		response = protocol.Message{ID: request.ID, Type: request.Type, Code: protocol.SUCCESS}
+	case protocol.HELLO:
+		log["console"].Debug("Received handshake hello message")
+		response = protocol.Message{ID: request.ID, Type: request.Type, Code: protocol.SUCCESS, Content: lb.String()}
 
 	//microservice operations
 	case protocol.PING:
@@ -175,6 +175,7 @@ func (lb *LoadBalancer) handleRequest(request protocol.Message, conn *protocol.C
 
 		log["console"].Debug("Sending ms request: %v", request)
 		respChan, err = msConn.SendRequestChan(request)
+
 		//response, err = msConn.SendRequest(request)
 		if err != nil {
 			response = protocol.Message{
@@ -276,35 +277,27 @@ func parseMsFromMessage(msg protocol.Message) (*protocol.MsInfo, error) {
 func (lb *LoadBalancer) connectToMicroservice(ms *protocol.MsInfo) (*protocol.Connection, error) {
 	address := net.JoinHostPort(ms.Host, ms.Port)
 
-	timeout := time.After(10 * time.Second)
-	ticker := time.NewTicker(200 * time.Millisecond)
-	defer ticker.Stop()
-
-	var nc net.Conn
-	var err error
-
-	for {
-		select {
-		case <-timeout:
-			return nil, fmt.Errorf("timeout connecting to microservice %s", address)
-
-		case <-ticker.C:
-			nc, err = net.DialTimeout("tcp", address, 1*time.Second)
-			if err == nil {
-				conn := protocol.NewConnection(nc)
-				conn.ID = crypto.GenerateID(crypto.CONN)
-
-				lb.RWmu.Lock()
-				lb.msConn[ms.ID] = conn
-				lb.RWmu.Unlock()
-
-				go conn.ReceiveLoopChan(lb)
-
-				log["console"].Info("Connected to microservice: %s", address)
-				return conn, nil
-			}
-		}
+	conn := protocol.TryToConnect(address)
+	if conn == nil {
+		return nil, fmt.Errorf("timeout - connecting to microservice %s", address)
 	}
+
+	go conn.ReceiveLoopChan(lb)
+
+	log["console"].Info("Connected to microservice: %s", address)
+
+	handshakeResp, err := conn.SendRequest(protocol.Message{
+		Type:    protocol.HELLO,
+		Content: lb.String(),
+	})
+	//TODO: also check if ms sent you response
+	if err != nil {
+		return nil, logger.StrToErrorNew(log, "Sending handshake to microservice %v", err)
+	} else if handshakeResp.Code != protocol.SUCCESS || handshakeResp.Type != protocol.HELLO {
+		return nil, logger.StrToErrorNew(log, "Response from microservice %v", handshakeResp)
+	}
+
+	return conn, nil
 }
 
 func (lb *LoadBalancer) handleRecover(request protocol.Message) protocol.Message {
@@ -329,22 +322,6 @@ func (lb *LoadBalancer) handleRecover(request protocol.Message) protocol.Message
 				break
 			}
 
-			//send test message to check if ms works
-			resp, err := msConn.SendRequest(protocol.Message{
-				ID:   crypto.GenerateID(crypto.MESSAGE_ID),
-				Type: protocol.TEST,
-			})
-
-			if err != nil || resp.Code != protocol.SUCCESS {
-				return protocol.Message{
-					ID:           request.ID,
-					Type:         protocol.UPDATE,
-					ConnectionID: request.ConnectionID,
-					Code:         protocol.ERROR,
-					Content:      err.Error(),
-				}
-			}
-
 			msConn.Mu.Lock()
 			lb.msInfo[ms.Type] = append(lb.msInfo[ms.Type], ms)
 			lb.msConn[ms.ID] = msConn
@@ -367,6 +344,29 @@ func (lb *LoadBalancer) handleRecover(request protocol.Message) protocol.Message
 }
 
 // ################################# NODE METHODS #################################
+func (lb *LoadBalancer) HandShake(conn *protocol.Connection) {
+	if err := protocol.Send(conn.RW.Writer, protocol.Message{
+		ID:      crypto.GenerateID(crypto.MESSAGE_ID),
+		Type:    protocol.HELLO,
+		Content: lb.String(),
+	}); err != nil {
+		log["console"].Error("Send handshake: %v", err)
+		conn.Close()
+		return
+	}
+
+	resp, err := protocol.Receive(conn.RW.Reader)
+	if err != nil {
+		log["console"].Error("Send handshake: %v", err)
+		conn.Close()
+		return
+	}
+	if resp.Type != protocol.HELLO || resp.Code != protocol.SUCCESS {
+		log["console"].Error("Wrong response expected succesfull handshake: %v", resp)
+	}
+
+	//for now only ms conn will apply to this, but cant check it yet (if it is ms)
+}
 
 func (lb *LoadBalancer) ReceiveHeartBeat(msg protocol.Message, conn *protocol.Connection) {
 
@@ -378,7 +378,6 @@ func (lb *LoadBalancer) AsyncEvent(request protocol.Message, conn *protocol.Conn
 
 	switch request.Type {
 	case protocol.RECOVER:
-		log["console"].Debug("######### Got recover message in async ###################\n")
 		response = lb.handleRecover(request)
 	//TODO: later extend this to parsing if update should add, delete or update ms data  (add - add, del - delete, nothing - just update) as a 6th part in msg
 	case protocol.UPDATE:
@@ -414,24 +413,11 @@ func (lb *LoadBalancer) AsyncEvent(request protocol.Message, conn *protocol.Conn
 				break
 			}
 
-			//send test message to check if ms works
-			resp, err := msConn.SendRequest(protocol.Message{
-				ID:   crypto.GenerateID(crypto.MESSAGE_ID),
-				Type: protocol.TEST,
-			})
-
-			if err != nil || resp.Code != protocol.SUCCESS {
-				response = protocol.Message{
-					ID:           request.ID,
-					Type:         protocol.UPDATE,
-					ConnectionID: request.ConnectionID,
-					Code:         protocol.ERROR,
-					Content:      err.Error(),
-				}
-				break
-			}
-
+			lb.RWmu.Lock()
 			lb.msInfo[ms.Type] = append(lb.msInfo[ms.Type], ms)
+			lb.msConn[ms.ID] = msConn
+			lb.RWmu.Unlock()
+
 			log["console"].Debug("Successfully added ms to register %v:%v type:%v\n", ms.Host, ms.Port, ms.Type)
 		}
 
@@ -456,7 +442,7 @@ func (lb *LoadBalancer) AsyncEvent(request protocol.Message, conn *protocol.Conn
 }
 
 func (lb *LoadBalancer) String() string {
-	return "LoadBalancer"
+	return "LOADBALANCER"
 }
 
 // ################################# NODE METHODS #################################

@@ -27,6 +27,10 @@ const (
 )
 
 type Agent struct {
+	nodeID string
+
+	controllerConnection *protocol.Connection
+
 	//key is Conn ID
 	msInfo map[string]*protocol.MsInfo
 	//key is MsInfo ID
@@ -41,7 +45,7 @@ type Agent struct {
 }
 
 // TODO: handle getting free port and communicating it to controller
-func NewAgent(lisPort string) (*Agent, error) {
+func NewAgent(lisPort string, nodeID string) (*Agent, error) {
 	//listen, err := net.Listen("tcp", ":0")
 	listen, err := net.Listen("tcp", lisPort)
 	if err != nil {
@@ -49,6 +53,7 @@ func NewAgent(lisPort string) (*Agent, error) {
 	}
 
 	return &Agent{
+		nodeID:        nodeID,
 		listener:      listen,
 		msInfo:        make(map[string]*protocol.MsInfo),
 		msConn:        make(map[string]*protocol.Connection),
@@ -57,6 +62,7 @@ func NewAgent(lisPort string) (*Agent, error) {
 
 }
 
+// for now agent only listens for controller
 func (a *Agent) Start() {
 	log["console"].Debug("Agent listening for Controller on %s", a.listener.Addr().String())
 
@@ -66,18 +72,46 @@ func (a *Agent) Start() {
 		return
 	}
 
-	a.handleControllerConnection(nc)
+	a.handleConnection(nc)
 }
 
-func (a *Agent) handleControllerConnection(nc net.Conn) {
+func (a *Agent) handleConnection(nc net.Conn) {
 	conn := protocol.NewConnection(nc)
 	defer conn.Close()
+
+	msg, err := protocol.Receive(conn.RW.Reader)
+	if err != nil {
+		log["console"].Error("Receiving handshake message: %v", err)
+		return
+	} else if msg.Type != protocol.HELLO {
+		log["console"].Error("Wrong message type during handshake: %v", msg)
+		return
+	}
+
+	if msg.Content == "CONTROLLER" {
+		a.handleController(conn)
+	} else {
+		log["console"].Error("Unknow node connected %v", msg)
+		return
+	}
+
+	protocol.Send(conn.RW.Writer, protocol.Message{
+		ID:      msg.ID,
+		Type:    msg.Type,
+		Code:    protocol.SUCCESS,
+		Content: a.String(),
+	})
+
+	select {}
+}
+
+func (a *Agent) handleController(conn *protocol.Connection) {
+
+	a.controllerConnection = conn
 
 	go conn.ReceiveLoop(a)
 
 	go a.SendHeartBeat(conn)
-
-	select {}
 }
 
 func (a *Agent) SendHeartBeat(conn *protocol.Connection) {
@@ -106,7 +140,7 @@ func (a *Agent) GetNextPort() string {
 
 func (a *Agent) createMicroservice(host string, port string, ms_type string) (*protocol.MsInfo, error) {
 
-	//Correct exec Command
+	//Create exec Command
 	cmd := exec.Command(
 		platform.Executable("service"),
 		"--port", port,
@@ -117,21 +151,21 @@ func (a *Agent) createMicroservice(host string, port string, ms_type string) (*p
 
 	err := cmd.Start()
 	if err != nil {
-		log["console"].Debug("Error while starting ms process %w", err)
-		return nil, logger.StrToError(log["string"], func() {
-			log["string"].Error("error start ms process: %w", err)
-		})
+		log["console"].Error("Error while starting ms process %v", err)
+		return nil, logger.StrToErrorNew(log, "error start ms process: %v", err)
 	}
 
 	log["console"].Info("ms %s process started successfully! Pid: %d", ms_type, cmd.Process.Pid)
 
 	ms := &protocol.MsInfo{
-		ID:      crypto.GenerateID(crypto.INSTANCE_NODE),
-		PID:     cmd.Process.Pid,
-		Host:    host,
-		Port:    port,
-		Process: cmd.Process,
-		Type:    protocol.ServiceType(ms_type),
+		ID:            crypto.GenerateID(crypto.INSTANCE_NODE),
+		NodeID:        a.nodeID,
+		PID:           cmd.Process.Pid,
+		Host:          host,
+		Port:          port,
+		LastHeartbeat: time.Now(),
+		Process:       cmd.Process,
+		Type:          protocol.ServiceType(ms_type),
 	}
 
 	//check if connection works
@@ -170,19 +204,27 @@ func (a *Agent) connectToMicroservice(ms *protocol.MsInfo) (*protocol.Connection
 	msConn := protocol.NewConnection(nc)
 	msConn.ID = crypto.GenerateID(crypto.CONN)
 
+	//set heartbeat after connection to prevents infitite "Unhealty loop"
+	ms.LastHeartbeat = time.Now()
+
 	go msConn.ReceiveLoop(a)
+
+	go a.watchMsHealth(ms)
 
 	resp, err := msConn.SendRequest(protocol.Message{
 		ID:      crypto.GenerateID(crypto.MESSAGE_ID),
-		Type:    protocol.HEARTBEAT,
-		Content: "AGENT",
+		Type:    protocol.HELLO,
+		Content: a.String(),
 	})
 
-	if err != nil || resp.Type != protocol.HEARTBEAT || resp.Code != protocol.SUCCESS {
-		return nil, logger.StrToErrorNew(log, "Error when recived response to test heartbeat: %v", resp)
+	//TODO: also check if node isnt a microservice
+	if err != nil || resp.Type != protocol.HELLO || resp.Code != protocol.SUCCESS {
+		return nil, logger.StrToErrorNew(log, "Error when recived response to handshake hello: %v", resp)
 	}
 
 	log["console"].Debug("Successfully connected to ms: %v", ms)
+
+	ms.LastHeartbeat = time.Now()
 
 	return msConn, nil
 }
@@ -196,13 +238,28 @@ func (a *Agent) handleCreate(request protocol.Message) protocol.Message {
 	ms, err := a.createMicroservice("localhost", port, serviceType)
 	if err != nil {
 		return protocol.Message{
-			ID: request.ID, Type: protocol.CREATE, Code: protocol.ERROR, Content: err.Error(),
+			ID:      request.ID,
+			Type:    protocol.CREATE,
+			Code:    protocol.ERROR,
+			Content: err.Error(),
+		}
+	}
+
+	msJson, err := json.ToJSON(ms)
+	if err != nil {
+		return protocol.Message{
+			ID:      request.ID,
+			Type:    protocol.CREATE,
+			Code:    protocol.ERROR,
+			Content: err.Error(),
 		}
 	}
 
 	return protocol.Message{
-		ID: request.ID, Type: protocol.CREATE, Code: protocol.SUCCESS,
-		Content: net.JoinHostPort(ms.Host, ms.Port),
+		ID:   request.ID,
+		Type: protocol.CREATE,
+		Code: protocol.SUCCESS,
+		Content:/*net.JoinHostPort(ms.Host, ms.Port)*/ msJson,
 	}
 }
 
@@ -249,8 +306,67 @@ func (a *Agent) handleRecover(request protocol.Message) protocol.Message {
 	}
 }
 
-// ################################# NODE METHODS #################################
+func (a *Agent) watchMsHealth(ms *protocol.MsInfo) {
+	allowedDelay := 7 * time.Second
 
+	for {
+		timestamp := ms.LastHeartbeat
+		if time.Since(timestamp) > allowedDelay {
+			ms.Status = protocol.Unhealthy
+			log["console"].Debug("MS %v has status UNHEALTHY", ms.ID)
+
+			go a.restartMs(ms)
+			return
+		}
+
+		time.Sleep(1 * time.Second)
+	}
+}
+
+func (a *Agent) restartMs(ms *protocol.MsInfo) {
+
+	//Both of errors are more of an debug if process and connection were already finished
+	if err := ms.Process.Kill(); err != nil {
+		log["console"].Debug("killing microservice %v process: %v", ms.ID, err)
+	}
+
+	prevConn := a.msConn[ms.ID]
+	if err := prevConn.Nc.Close(); err != nil {
+		log["console"].Debug("close previous microservice connection: %v", err)
+	}
+
+	cmd := exec.Command(
+		platform.Executable("service"),
+		"--port", ms.Port,
+		"--type", string(ms.Type),
+	)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	err := cmd.Start()
+	if err != nil {
+		log["console"].Error("Error while starting ms process %v", err)
+		return
+	}
+
+	log["console"].Info("Restarted ms process %s-%s successfully! Pid: %d", ms.ID, ms.Type, ms.Process.Pid)
+
+	msConn, err := a.connectToMicroservice(ms)
+	if err != nil {
+		log["console"].Error("Connection to ms id-%v: %v", ms.ID, err)
+		return
+	}
+
+	msConn.Mu.Lock()
+	a.msConn[ms.ID] = msConn
+	a.msInfo[msConn.ID] = ms
+	msConn.Mu.Unlock()
+}
+
+// ################################# NODE METHODS #################################
+func (a *Agent) HandShake(conn *protocol.Connection) {
+
+}
 func (a *Agent) ReceiveHeartBeat(msg protocol.Message, conn *protocol.Connection) {
 	a.RWmu.Lock()
 	defer a.RWmu.Unlock()
@@ -259,7 +375,7 @@ func (a *Agent) ReceiveHeartBeat(msg protocol.Message, conn *protocol.Connection
 		ms.LastHeartbeat = time.Now()
 		ms.Status = protocol.Healthy
 		ms.Mu.Unlock()
-		//log["console"].Debug("Microservice %v heartbeat is %v", ms.ID, ms.LastHeartbeat)
+		log["console"].Debug("Microservice %v heartbeat is %v", ms.ID, ms.LastHeartbeat)
 
 	} else {
 		log["console"].Error("Unknown microservice in connection with id: %v", conn.ID)
@@ -289,7 +405,7 @@ func (a *Agent) AsyncEvent(request protocol.Message, conn *protocol.Connection) 
 }
 
 func (a *Agent) String() string {
-	return "Agent"
+	return "AGENT"
 }
 
 // ################################# NODE METHODS #################################

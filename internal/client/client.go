@@ -125,6 +125,10 @@ func (c *CLI) HandleExit() {
 
 // ################################ NODE METHODS ################################
 
+func (c *CLI) HandShake(conn *protocol.Connection) {
+
+}
+
 func (c *CLI) ReceiveHeartBeat(msg protocol.Message, conn *protocol.Connection) {
 	// client doesnt receive heartbeat checks
 }

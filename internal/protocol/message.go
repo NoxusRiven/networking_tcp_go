@@ -21,10 +21,9 @@ const (
 	UPLOAD   MessageType = "FILE_UPLOAD"
 	DOWNLOAD MessageType = "FILE_DOWNLOAD"
 
-	// setup
-	REG_API   MessageType = "REGISTER_API"
-	REG_AGENT MessageType = "REGISTER_AGENT"
-	REG_LB    MessageType = "REGISTER_LOADBALANCER"
+	// handshake
+	REG_API MessageType = "REGISTER_API"
+	HELLO   MessageType = "HELLO"
 
 	// system
 	CREATE  MessageType = "CREATE"
@@ -34,9 +33,6 @@ const (
 	UPDATE    MessageType = "UPDATE"
 	RAPORT    MessageType = "RAPORT"
 	HEARTBEAT MessageType = "HEARTBEAT"
-
-	//? might not be needed, check this out
-	LB_SYNC MessageType = "SYNCRONIZE_LOADBALANCERS"
 
 	//if type is not important or just want to test connection
 	TEST MessageType = "TEST"
@@ -62,24 +58,6 @@ type Message struct {
 	Code         CodeType    `json:"code,omitempty"`
 	Content      any         `json:"content,omitempty"`
 }
-
-// func (m Message) String() string {
-
-// 	parts := []string{
-// 		fmt.Sprintf("ID=%s", m.ID),
-// 		fmt.Sprintf("Type=%v", m.Type),
-// 	}
-
-// 	if m.Code != 0 {
-// 		parts = append(parts, fmt.Sprintf("Code=%v", m.Code))
-// 	}
-
-// 	if m.Content != "" {
-// 		parts = append(parts, fmt.Sprintf("Content=%v", m.Content))
-// 	}
-
-// 	return strings.Join(parts, " | ")
-// }
 
 func Send(writer *bufio.Writer, msg Message) error {
 	raw, err := json.Marshal(msg)

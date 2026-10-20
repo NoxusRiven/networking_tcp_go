@@ -50,28 +50,22 @@ func (c *Connection) Close() {
 }
 
 func (c *Connection) ReceiveLoop(node Node) {
-	//fmt.Println("[Receive Loop] started receive loop!")
 	for {
 		msg, err := Receive(c.RW.Reader)
 		if err != nil {
-			fmt.Println("[Receive loop][ERROR]", c.ID, ": ", err)
-			delete(c.pending, msg.ID)
+			fmt.Println("[Receive Loop][ERROR]", c.ID, ": ", err)
+			// if !c.tryToReconnect() {
+			// 	return
+			// }
+			// //renew handshake for this connection
+			// node.HandShake(c)
+			// continue
+
 			return
 		}
 
-		connID := fmt.Sprintf(
-			"%s -> %s",
-			c.Nc.LocalAddr(),
-			c.Nc.RemoteAddr(),
-		)
-
-		fmt.Printf("[Receive loop][DEBUG][CONN %s]\n",
-			connID,
-		)
-
 		if ch, ok := c.pending[msg.ID]; ok {
 			ch <- msg
-			//fmt.Println("[Receive Loop]: received and deleting", msg.ID)
 			delete(c.pending, msg.ID)
 			continue
 		}
@@ -107,13 +101,15 @@ func (c *Connection) ReceiveLoop(node Node) {
 }
 
 func (c *Connection) SendRequest(msg Message) (Message, error) {
-	msg.ID = crypto.GenerateID(4)
+	if msg.ID == "" {
+		msg.ID = crypto.GenerateID(4)
+	}
 
 	ch := make(chan Message, 1)
 
 	c.Mu.Lock()
 	c.pending[msg.ID] = ch
-	fmt.Println("[Send Request] started pending on key", msg.ID, "and conn(ID-", c.ID, ", LocAddr", c.Nc.LocalAddr())
+	fmt.Println("[Send Request] started pending on key", msg.ID, "and conn(ID-", c.ID, ", ", c.Nc.LocalAddr(), "->", c.Nc.RemoteAddr(), ")")
 	c.Mu.Unlock()
 
 	fmt.Println("[Send Request] full message: ", msg)
@@ -134,16 +130,18 @@ func (c *Connection) SendRequest(msg Message) (Message, error) {
 }
 
 func (c *Connection) SendRequestChan(msg Message) (<-chan Message, error) {
-	msg.ID = crypto.GenerateID(4)
+	if msg.ID == "" {
+		msg.ID = crypto.GenerateID(crypto.MESSAGE_ID)
+	}
 
-	ch := make(chan Message, 8)
+	ch := make(chan Message, 1)
 
 	c.Mu.Lock()
 	c.pending[msg.ID] = ch
-	fmt.Println("[Send Request] started pending on key", msg.ID, "and conn(ID-", c.ID, ", LocAddr", c.Nc.LocalAddr())
+	fmt.Println("[Send Request Chan] started pending on key", msg.ID, "and conn(ID-", c.ID, ", ", c.Nc.LocalAddr(), "->", c.Nc.RemoteAddr(), ")")
 	c.Mu.Unlock()
 
-	fmt.Println("[Send Request] full message: ", msg)
+	fmt.Println("[Send Request Chan] full message: ", msg)
 	c.Mu.Lock()
 	err := Send(c.RW.Writer, msg)
 	c.Mu.Unlock()
@@ -162,9 +160,14 @@ func (c *Connection) ReceiveLoopChan(node Node) {
 	for {
 		msg, err := Receive(c.RW.Reader)
 		if err != nil {
-			fmt.Println("[Receive loop][ERROR]", c.ID, ": ", err)
-			delete(c.pending, msg.ID)
-			return
+			fmt.Println("[Receive Loop Chan][ERROR]", c.ID, ": ", err)
+			if !c.tryToReconnect() {
+				return
+			}
+
+			//renew handshake for this connection
+			node.HandShake(c)
+			continue
 		}
 
 		fmt.Println("Received message:", msg, "by node:", node.String())
@@ -172,7 +175,6 @@ func (c *Connection) ReceiveLoopChan(node Node) {
 
 			ch <- msg
 			if !msg.IsStream {
-				fmt.Println("Not stream")
 				c.Mu.Lock()
 				delete(c.pending, msg.ID)
 				close(ch)
@@ -188,4 +190,47 @@ func (c *Connection) ReceiveLoopChan(node Node) {
 			go node.AsyncEvent(msg, c)
 		}
 	}
+}
+
+func (c *Connection) tryToReconnect() bool {
+	addr := c.Nc.RemoteAddr().String()
+
+	conn := TryToConnect(addr)
+	if conn == nil {
+		return false
+	}
+	_ = c.Nc.Close()
+
+	c.Nc = conn.Nc
+	c.RW = conn.RW
+
+	return true
+}
+
+func TryToConnect(addr string) *Connection {
+	deadline := time.Now().Add(10 * time.Second)
+
+	for time.Now().Before(deadline) {
+		nc, err := net.DialTimeout(
+			"tcp",
+			addr,
+			500*time.Millisecond,
+		)
+
+		if err == nil {
+			conn := NewConnection(nc)
+			conn.ID = crypto.GenerateID(crypto.CONN)
+
+			fmt.Println("Connection succeded! ID:", conn.ID)
+
+			return conn
+		}
+
+		fmt.Println("Connection failed:", err, "- Retring!")
+		time.Sleep(400 * time.Millisecond)
+	}
+
+	fmt.Println("Connection failed")
+
+	return nil
 }

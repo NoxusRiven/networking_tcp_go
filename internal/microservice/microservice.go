@@ -66,54 +66,55 @@ func (ms *Microservice) acceptConnections() {
 
 		log["console"].Info("accepted new connection")
 
-		//use go rutine to handle every connection async
+		//use gorutine to handle every connection async
 		go ms.handleConnection(nc)
 	}
 }
 
 func (ms *Microservice) handleConnection(nc net.Conn) {
 	conn := protocol.NewConnection(nc)
+	conn.ID = crypto.GenerateID(crypto.CONN)
 
-	//TODO: something is wrong with getting first request, brakes code, fix this and in work
 	msg, err := protocol.Receive(conn.RW.Reader)
 	if err != nil {
 		log["console"].Error("Error while receiving message from connection: %v", err)
+		return
+	} else if msg.Type != protocol.HELLO {
+		log["console"].Error("Wrong message type during handshake: %v", msg)
+		return
 	}
 
 	log["console"].Debug("got message %v", msg)
 
-	protocol.Send(conn.RW.Writer, protocol.Message{
+	err = protocol.Send(conn.RW.Writer, protocol.Message{
 		ID:   msg.ID,
 		Type: msg.Type,
 		Code: protocol.SUCCESS,
 	})
+	if err != nil {
+		log["console"].Error("handle Connection Send: %v", err)
+		return
+	}
 
-	if msg.Type == protocol.HEARTBEAT {
+	if msg.Content == "AGENT" {
+		log["console"].Debug("Found agent conn")
 		ms.agentConn = conn
 		go ms.SendHeartBeat(conn)
 	} else {
 		ms.LbConn = conn
-
-		log["console"].Debug("In work scope")
-
 		go ms.Work(conn)
 	}
 }
 
 func (ms *Microservice) Work(conn *protocol.Connection) {
-
-	log["console"].Debug("Started working...")
 	for {
-
-		log["console"].Debug("In a for loop")
 		request, err := protocol.Receive(ms.LbConn.RW.Reader)
 		if err != nil {
-			log["console"].Error("reading request error %w", err)
+			log["console"].Error("reading request error %v", err)
 			return
 		}
-		log["console"].Debug("after receiving request")
 
-		log["console"].Debug("received request: %s", request)
+		log["console"].Debug("Succesfully received message %v", request)
 
 		if strings.ToLower(string(request.Type)) != String(ms.Service) {
 			errStr := fmt.Sprintf("Wrong request message %v", request.Type)
