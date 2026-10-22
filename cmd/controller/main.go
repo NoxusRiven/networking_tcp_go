@@ -9,7 +9,6 @@ import (
 )
 
 func main() {
-
 	controller, err := controller.NewController()
 	if err != nil {
 		panic(err)

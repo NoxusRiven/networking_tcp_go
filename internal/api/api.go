@@ -52,8 +52,8 @@ type APIGateway struct {
 
 // ################################## CORE #####################################
 
-func NewAPIGateway(port uint32) (*APIGateway, error) {
-	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+func NewAPIGateway(port string) (*APIGateway, error) {
+	ln, err := net.Listen("tcp", ":"+port)
 	if err != nil {
 		return nil, err
 	}

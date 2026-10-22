@@ -7,7 +7,7 @@ import (
 
 func main() {
 	cli := client.NewCLI()
-	if err := cli.Run("localhost", "4200"); err != nil {
+	if err := cli.Run(); err != nil {
 		fmt.Println("CLI error:", err)
 	}
 }

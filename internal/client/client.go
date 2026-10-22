@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"net"
+	"networking/tcp/internal/config"
 	"networking/tcp/internal/protocol"
 	"os"
 	"strings"
@@ -23,8 +24,18 @@ func NewCLI() *CLI {
 }
 
 // Run connects to API Gateway
-func (c *CLI) Run(host string, port string) error {
-	nc, err := net.Dial("tcp", net.JoinHostPort(host, port))
+func (c *CLI) Run() error {
+	conf, err := config.ReadConfigFile()
+	if err != nil {
+		return err
+	}
+
+	addr, err := conf.FindAddrByNodeName(config.API_CONF)
+	if err != nil {
+		return err
+	}
+
+	nc, err := net.Dial("tcp", addr)
 	if err != nil {
 		return err
 	}

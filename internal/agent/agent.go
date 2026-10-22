@@ -367,6 +367,7 @@ func (a *Agent) restartMs(ms *protocol.MsInfo) {
 func (a *Agent) HandShake(conn *protocol.Connection) {
 
 }
+
 func (a *Agent) ReceiveHeartBeat(msg protocol.Message, conn *protocol.Connection) {
 	a.RWmu.Lock()
 	defer a.RWmu.Unlock()

@@ -1,0 +1,25 @@
+{
+    "config": 
+    [
+        {
+            "node" : "api",
+            "port" : "11111"
+        },
+        {
+            "node" : "controller",
+            "port" : "22222"
+        },
+        {
+            "node" : "agent",
+            "port" : "33333"
+        },
+        {
+            "node" : "loadbalancer",
+            "port" : "44444"
+        },
+        {
+            "node" : "microservice",
+            "port" : "55555"
+        }
+    ]
+}

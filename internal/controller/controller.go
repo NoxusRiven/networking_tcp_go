@@ -3,6 +3,7 @@ package controller
 import (
 	"fmt"
 	"net"
+	"networking/tcp/internal/config"
 	crypto "networking/tcp/internal/cryptography"
 	json "networking/tcp/internal/json_helper"
 	"networking/tcp/internal/logger"
@@ -29,23 +30,20 @@ var log logger.Loggers = logger.NewLoggers(
 	),
 )
 
-const (
-	REQUEST_PORT = ":8888"
-	SYSTEM_PORT  = ":9000"
-)
-
-const (
-	BASE_PORT_AGENT     string = "10000"
-	BASE_PORT_LBALANCER string = "13000"
-
-	HeartbeatTimeout = 3 * time.Second
-)
-
 // ##################################### STRUCTURES #####################################
 // TODO: controller should update "lastHeartbeat" of nodes when they send hearthbeat and with every interaction
 // TODO: only add second connection and use it when working with files
 // TODO: if agent is in the same host as controller he can choose ports otherwise controller sets boundry or just a free port and agents sends back wich port he got in remote host
 type Controller struct {
+	//constant values
+	BASE_PORT_AGENT string
+	HOST_AGENT      string
+
+	BASE_PORT_LBALANCER string
+	HOST_LBALANCER      string
+
+	PORT string
+
 	listener net.Listener
 
 	//? if controller will connect to more then 1 api make it same as agent storage
@@ -70,12 +68,41 @@ type Controller struct {
 
 // ################################## CORE FUNCTIONS #####################################
 func NewController() (*Controller, error) {
-	apiListener, err := net.Listen("tcp", REQUEST_PORT)
+	//get config
+	conf, err := config.ReadConfigFile()
+	if err != nil {
+		return nil, err
+	}
+
+	//set values
+	agentConf, err := conf.FindNodeByName(config.AGENT_CONF)
+	if err != nil {
+		return nil, err
+	}
+	lbConf, err := conf.FindNodeByName(config.LB_CONF)
+	if err != nil {
+		return nil, err
+	}
+	controllerConf, err := conf.FindNodeByName(config.CONTROLLER_CONF)
+	if err != nil {
+		return nil, err
+	}
+	port := controllerConf.Port
+
+	apiListener, err := net.Listen("tcp", ":"+port)
 	if err != nil {
 		return nil, err
 	}
 
 	return &Controller{
+		BASE_PORT_AGENT: agentConf.Port,
+		HOST_AGENT:      agentConf.Host,
+
+		BASE_PORT_LBALANCER: lbConf.Port,
+		HOST_LBALANCER:      lbConf.Host,
+
+		PORT: port,
+
 		listener: apiListener,
 
 		agentsInfo: make(map[string]*protocol.AgentInfo),
@@ -137,22 +164,24 @@ func (c *Controller) Remove(conn *protocol.Connection, infoID string, connType p
 	}
 }
 
-func (c *Controller) createNewMessageNode(agentPort string, lbPort string) (*protocol.AgentInfo, *protocol.LBalancerInfo, error) {
+func (c *Controller) createNewMessageNode() (*protocol.AgentInfo, *protocol.LBalancerInfo, error) {
 	msgNodeID := crypto.GenerateID(crypto.MESSAGE_NODE)
 
-	agent, err := c.createNewAgent(agentPort, msgNodeID)
+	agent, err := c.createNewAgent(c.BASE_PORT_AGENT, msgNodeID)
 	if err != nil {
 		return nil, nil, err
 	}
 
 	//TODO: handle cleaning up agent (no point for agent that doesnt have lb)
-	lb, err := c.createNewLoadBalancer(lbPort)
+	lb, err := c.createNewLoadBalancer(c.BASE_PORT_LBALANCER)
 	if err != nil {
 		return nil, nil, err
 	}
 
 	agent.NodeID = msgNodeID
 	lb.NodeID = msgNodeID
+
+	log["console"].Debug("Succesfully created message node (agent: %v, lb: %v)", agent, lb)
 
 	//only returns if both of them succeded
 	return agent, lb, nil
@@ -403,7 +432,7 @@ func (c *Controller) handleConnection(nc net.Conn) {
 		// create for the first time (both data structures are empty)
 		if len(c.lbInfo) == 0 && len(c.agentsInfo) == 0 {
 			// connection with api was correct so now create message node so api can connect to it
-			c.createNewMessageNode(BASE_PORT_AGENT, BASE_PORT_LBALANCER)
+			c.createNewMessageNode()
 		}
 
 		// convert map to list because api has to map data by itself
@@ -485,6 +514,7 @@ func (c *Controller) createNewAgent(port string, nodeID string) (*protocol.Agent
 		Host:          "localhost",
 		Port:          port,
 		Process:       cmd.Process,
+		Status:        protocol.Healthy,
 		Microservices: make(map[protocol.ServiceType][]*protocol.MsInfo),
 	}
 
@@ -665,6 +695,7 @@ func (c *Controller) createNewLoadBalancer(port string) (*protocol.LBalancerInfo
 		Host:          "localhost",
 		Port:          port,
 		Process:       cmd.Process,
+		Status:        protocol.Healthy,
 		Microservices: make(map[protocol.ServiceType][]*protocol.MsInfo),
 	}
 
@@ -786,12 +817,7 @@ func (c *Controller) restartLb(lb *protocol.LBalancerInfo) {
 		return
 	}
 
-	// if err := c.syncWithAPI(c.apiConn, []*protocol.LBalancerInfo{lb}); err != nil {
-	// 	log["console"].Error("sync with api: %v", err)
-	// 	return
-	// }
-
-	// log["console"].Debug("Succesfully restarted lb %v", lb.ID)
+	log["console"].Debug("Succesfully restarted lb %v", lb.ID)
 }
 
 // ################################ LOAD BALANCER FUNCTIONS ###################################
@@ -805,40 +831,54 @@ func (c *Controller) createNewService(serviceType protocol.ServiceType) (*protoc
 	hasLB := len(c.lbInfo) > 0
 	c.mu.RUnlock()
 
-	var agent *protocol.AgentInfo
-	var lb *protocol.LBalancerInfo
+	var agent *protocol.AgentInfo = nil
+	var lb *protocol.LBalancerInfo = nil
 	var err error
 
 	if !hasAgent || !hasLB {
 		//TODO: Message node now doesnt have to have 1 agent and 1 lb, it will contain many lbs and 1 agent
-		agent, lb, err = c.createNewMessageNode(BASE_PORT_AGENT, BASE_PORT_LBALANCER)
+		agent, lb, err = c.createNewMessageNode()
 		if err != nil {
 			return nil, nil, err
 		}
 
+	} else {
+		log["console"].Debug("Message node is present. agent size: %v,  lb size: %v", len(c.agentsInfo), len(c.lbInfo))
 	}
 
 	// TODO: choose agent by load (least busy, etc.)
+	/*
+	*TODO: if agent/lb is found unhealthy retry 1/2 times then return error
+	*(maybe use goto to start of method or handle it call higher)
+	 */
 	c.mu.RLock()
 	if hasAgent {
 		for _, a := range c.agentsInfo {
-			agent = a
-			break
+			if a.Status == protocol.Healthy {
+				agent = a
+				break
+			} else {
+				return nil, nil, logger.StrToErrorNew(log, "Found matching agent but is Unhealthy")
+			}
 		}
 	}
-	c.mu.RUnlock()
 
-	c.mu.RLock()
 	if hasLB {
 		for _, l := range c.lbInfo {
-			lb = l
-			break
+			if l.Status == protocol.Healthy {
+				lb = l
+				break
+			} else {
+				return nil, nil, logger.StrToErrorNew(log, "Found matching lb but is Unhealthy")
+			}
 		}
 	}
 	c.mu.RUnlock()
 
 	if agent == nil || lb == nil {
-		return nil, nil, logger.StrToErrorNew(log, "no message node available: passed agent/lb creation and iteration and still no nodes were found (a: %v, l: %v)\n", agent, lb)
+		return nil, nil, logger.StrToErrorNew(log, "one of nodes unavailable, one of them is nil: (agent: %v, lb: %v)\n", agent, lb)
+	} else if agent.Status == protocol.Unhealthy || lb.Status == protocol.Unhealthy {
+		return nil, nil, logger.StrToErrorNew(log, "one of nodes are unhealthy (agent %v, lb: %v)", agent.Status, lb.Status)
 	}
 
 	// mapping agent and lb info to agent conn
@@ -846,7 +886,7 @@ func (c *Controller) createNewService(serviceType protocol.ServiceType) (*protoc
 	lbConn := c.lbConn[lb.ID]
 
 	if agentConn == nil || lbConn == nil {
-		return nil, nil, logger.StrToErrorNew(log, "One of message node connection is nil agent: %v, lb: %v\n", agentConn, lbConn)
+		return nil, nil, logger.StrToErrorNew(log, "One of nodes connection is nil (agent: %v, lb: %v)\n", agentConn, lbConn)
 	}
 
 	// message agent to create service

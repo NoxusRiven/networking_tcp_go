@@ -316,6 +316,11 @@ func (lb *LoadBalancer) handleRecover(request protocol.Message) protocol.Message
 
 	for _, mses := range services {
 		for _, ms := range mses {
+			if ms.Status == protocol.Unhealthy {
+				log["console"].Error("Found ms but status is UNHEALTHY")
+				continue
+			}
+
 			msConn, err := lb.connectToMicroservice(ms)
 			if err != nil {
 				log["console"].Error("connecting to ms %v: %v", ms, err)
@@ -398,6 +403,18 @@ func (lb *LoadBalancer) AsyncEvent(request protocol.Message, conn *protocol.Conn
 		conn.RWmu.Lock()
 		_, ok := lb.msInfo[ms.Type]
 		conn.RWmu.Unlock()
+
+		if ms.Status == protocol.Unhealthy {
+			strErr := "Found ms but has status UNHEALTHY"
+			log["console"].Error(strErr)
+			response = protocol.Message{
+				ID:      request.ID,
+				Type:    protocol.UPDATE,
+				Code:    protocol.ERROR,
+				Content: strErr,
+			}
+			break
+		}
 
 		if !ok {
 

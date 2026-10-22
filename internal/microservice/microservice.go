@@ -66,7 +66,6 @@ func (ms *Microservice) acceptConnections() {
 
 		log["console"].Info("accepted new connection")
 
-		//use gorutine to handle every connection async
 		go ms.handleConnection(nc)
 	}
 }

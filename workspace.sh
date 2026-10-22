@@ -4,15 +4,15 @@ set -e
 
 PROJECT_HOME="$(pwd)"
 
-# Usuń poprzednią sesję jeśli istnieje
+# Delete previous session if it exists
 tmux kill-session -t workspace 2>/dev/null || true
 
-# Komenda startowa dla każdego pane'a:
-# PROMPT_DIRTRIM=2 skraca ścieżkę w bashowym promptcie
+# Shorten every showed path to 2 parents
 SHELL_CMD='export PROMPT_DIRTRIM=2; exec bash -i'
 
 tmux new-session -d \
     -s workspace \
+    -n test \
     -n system \
     -c "$PROJECT_HOME/cmd/controller" \
     "$SHELL_CMD"
@@ -36,6 +36,11 @@ tmux new-window -t workspace \
 
 tmux split-window -t workspace:control -h \
     -c "$PROJECT_HOME" \
+    "$SHELL_CMD"
+
+tmux new-window -t workspace \
+    -n test \
+    -c "$PROJECT_HOME/cmd/test" \
     "$SHELL_CMD"
 
 tmux select-window -t workspace:system
