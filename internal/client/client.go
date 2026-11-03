@@ -3,11 +3,11 @@ package client
 import (
 	"bufio"
 	"fmt"
-	"net"
 	"networking/tcp/internal/config"
 	"networking/tcp/internal/protocol"
 	"os"
 	"strings"
+	"time"
 )
 
 // -------------------- STRUCTURES -----------------------
@@ -35,12 +35,11 @@ func (c *CLI) Run() error {
 		return err
 	}
 
-	nc, err := net.Dial("tcp", addr)
+	c.conn, err = protocol.TryToConnect(addr, 5*time.Second)
 	if err != nil {
 		return err
 	}
 
-	c.conn = protocol.NewConnection(nc)
 	defer c.conn.Close()
 
 	go c.conn.ReceiveLoopChan(c)

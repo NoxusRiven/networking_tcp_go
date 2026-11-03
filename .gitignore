@@ -6,3 +6,4 @@
 /cmd/test/
 
 system.config.json
+controller.cache.json

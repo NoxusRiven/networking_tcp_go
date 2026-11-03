@@ -3,7 +3,7 @@ package config
 import (
 	"fmt"
 	"net"
-	json "networking/tcp/internal/json_helper"
+	json "networking/tcp/internal/json"
 	"os"
 )
 

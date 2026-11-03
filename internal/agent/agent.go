@@ -3,8 +3,8 @@ package agent
 import (
 	"fmt"
 	"net"
-	crypto "networking/tcp/internal/cryptography"
-	json "networking/tcp/internal/json_helper"
+	crypto "networking/tcp/internal/crypto"
+	json "networking/tcp/internal/json"
 	"networking/tcp/internal/logger"
 	"networking/tcp/internal/platform"
 	"networking/tcp/internal/protocol"
@@ -152,7 +152,7 @@ func (a *Agent) createMicroservice(host string, port string, ms_type string) (*p
 	err := cmd.Start()
 	if err != nil {
 		log["console"].Error("Error while starting ms process %v", err)
-		return nil, logger.StrToErrorNew(log, "error start ms process: %v", err)
+		return nil, logger.StrToError(log, "error start ms process: %v", err)
 	}
 
 	log["console"].Info("ms %s process started successfully! Pid: %d", ms_type, cmd.Process.Pid)
@@ -171,7 +171,7 @@ func (a *Agent) createMicroservice(host string, port string, ms_type string) (*p
 	//check if connection works
 	msConn, err := a.connectToMicroservice(ms)
 	if err != nil {
-		return nil, logger.StrToErrorNew(log, "Error while handling ms connection: %v", err)
+		return nil, logger.StrToError(log, "Error while handling ms connection: %v", err)
 	}
 
 	a.RWmu.Lock()
@@ -195,14 +195,18 @@ func (a *Agent) KillAllMS() {
 
 func (a *Agent) connectToMicroservice(ms *protocol.MsInfo) (*protocol.Connection, error) {
 
-	var nc net.Conn
-	var err error
-	if nc, err = net.Dial("tcp", net.JoinHostPort(ms.Host, ms.Port)); err != nil {
-		return nil, logger.StrToErrorNew(log, "Error while trying to connect to microservice %v", ms)
-	}
+	//var nc net.Conn
+	//var err error
+	// if nc, err = net.DialTimeout("tcp", net.JoinHostPort(ms.Host, ms.Port)); err != nil {
+	// 	return nil, logger.StrToError(log, "Error while trying to connect to microservice %v", ms)
+	// }
 
-	msConn := protocol.NewConnection(nc)
-	msConn.ID = crypto.GenerateID(crypto.CONN)
+	// msConn := protocol.NewConnection(nc)
+	// msConn.ID = crypto.GenerateID(crypto.CONN)
+	msConn, err := protocol.TryToConnect(net.JoinHostPort(ms.Host, ms.Port), 5*time.Second)
+	if err != nil {
+		return nil, logger.StrToError(log, "Error while trying to connect to microservice %v", ms)
+	}
 
 	//set heartbeat after connection to prevents infitite "Unhealty loop"
 	ms.LastHeartbeat = time.Now()
@@ -219,7 +223,7 @@ func (a *Agent) connectToMicroservice(ms *protocol.MsInfo) (*protocol.Connection
 
 	//TODO: also check if node isnt a microservice
 	if err != nil || resp.Type != protocol.HELLO || resp.Code != protocol.SUCCESS {
-		return nil, logger.StrToErrorNew(log, "Error when recived response to handshake hello: %v", resp)
+		return nil, logger.StrToError(log, "Error when recived response to handshake hello: %v", resp)
 	}
 
 	log["console"].Debug("Successfully connected to ms: %v", ms)
@@ -230,7 +234,7 @@ func (a *Agent) connectToMicroservice(ms *protocol.MsInfo) (*protocol.Connection
 }
 
 func (a *Agent) handleCreate(request protocol.Message) protocol.Message {
-	serviceType := request.Content.(string) // e.g. "PING" — controller sends type in Content
+	serviceType := request.Content // e.g. "PING" — controller sends type in Content
 	a.RWmu.Lock()
 	port := a.GetNextPort()
 	a.RWmu.Unlock()
@@ -327,12 +331,12 @@ func (a *Agent) restartMs(ms *protocol.MsInfo) {
 
 	//Both of errors are more of an debug if process and connection were already finished
 	if err := ms.Process.Kill(); err != nil {
-		log["console"].Debug("killing microservice %v process: %v", ms.ID, err)
+		log["console"].Warning("killing microservice %v process: %v", ms.ID, err)
 	}
 
 	prevConn := a.msConn[ms.ID]
 	if err := prevConn.Nc.Close(); err != nil {
-		log["console"].Debug("close previous microservice connection: %v", err)
+		log["console"].Warning("close previous microservice connection: %v", err)
 	}
 
 	cmd := exec.Command(

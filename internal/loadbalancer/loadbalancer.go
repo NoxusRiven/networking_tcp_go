@@ -3,8 +3,8 @@ package loadbalancer
 import (
 	"fmt"
 	"net"
-	crypto "networking/tcp/internal/cryptography"
-	json "networking/tcp/internal/json_helper"
+	crypto "networking/tcp/internal/crypto"
+	json "networking/tcp/internal/json"
 	"networking/tcp/internal/logger"
 	"networking/tcp/internal/protocol"
 	"os"
@@ -63,15 +63,13 @@ func (lb *LoadBalancer) Start() {
 
 func (lb *LoadBalancer) handleConnection(nc net.Conn) {
 
-	requestPtr, conn := lb.registerConnection(nc)
+	conn, isController := lb.registerConnection(nc)
 	//error accured or controller connected
-	if requestPtr == nil || conn == nil {
+	if conn == nil || isController {
 		return
 	}
 
 	defer conn.Close()
-
-	go lb.handleRequest(*requestPtr, conn)
 
 	for {
 		request, err := protocol.Receive(conn.RW.Reader)
@@ -84,35 +82,44 @@ func (lb *LoadBalancer) handleConnection(nc net.Conn) {
 	}
 }
 
-func (lb *LoadBalancer) registerConnection(nc net.Conn) (*protocol.Message, *protocol.Connection) {
+func (lb *LoadBalancer) registerConnection(nc net.Conn) (*protocol.Connection, bool) {
 	conn := protocol.NewConnection(nc)
 
 	request, err := protocol.Receive(conn.RW.Reader)
 	if err != nil {
 		log["console"].Error("Register connection: %v", err)
-		return nil, nil
+		return nil, false
 	}
 
-	if request.Type == protocol.HELLO && request.Content == "CONTROLLER" {
+	if request.Type != protocol.HELLO {
+		log["console"].Error("Expected handshake received: %v", request)
+		return nil, false
+	}
+
+	isController := false
+	if request.Content == "CONTROLLER" {
 		log["console"].Debug("Got controller connection, conn: %v", (conn.Nc.LocalAddr().String() + " -> " + conn.Nc.RemoteAddr().String()))
 
 		go conn.ReceiveLoop(lb)
 
 		go lb.SendHeartBeat(conn)
 
-		if err := protocol.Send(conn.RW.Writer, protocol.Message{
-			ID:      request.ID,
-			Type:    request.Type,
-			Code:    protocol.SUCCESS,
-			Content: lb.String(),
-		}); err != nil {
-			log["console"].Error("Send handshake: %v", err)
-			conn.Close()
-		}
-		return nil, nil
+		isController = true
 	}
 
-	return &request, conn
+	if err := protocol.Send(conn.RW.Writer, protocol.Message{
+		ID:      request.ID,
+		Type:    request.Type,
+		Code:    protocol.SUCCESS,
+		Content: lb.String(),
+	}); err != nil {
+		log["console"].Error("Send handshake: %v", err)
+		conn.Close()
+	}
+
+	log["console"].Debug("Succesfull handshake: %v", request)
+
+	return conn, isController
 }
 
 func (lb *LoadBalancer) handleRequest(request protocol.Message, conn *protocol.Connection) {
@@ -122,6 +129,7 @@ func (lb *LoadBalancer) handleRequest(request protocol.Message, conn *protocol.C
 
 	switch request.Type {
 	case protocol.RECOVER:
+		//TODO: check if this should be counted as error, if any correct path leads to some node sending recover through request
 		log["console"].Debug("Got recover message %v", request)
 		response = protocol.Message{ID: request.ID, Type: request.Type, Code: protocol.SUCCESS}
 
@@ -208,11 +216,8 @@ func (lb *LoadBalancer) handleRequest(request protocol.Message, conn *protocol.C
 
 	} else {
 
-		log["console"].Debug("Waiting for channel %v messages...", respChan)
 		for response := range respChan {
 			response.ID = request.ID
-
-			log["console"].Debug("chan %v got response: %v", respChan, response)
 
 			conn.RWmu.RLock()
 			err := protocol.Send(conn.RW.Writer, response)
@@ -245,21 +250,17 @@ func (a *LoadBalancer) SendHeartBeat(conn *protocol.Connection) {
 
 func parseMsFromMessage(msg protocol.Message) (*protocol.MsInfo, error) {
 	if msg.Content == "" {
-		err := logger.StrToError(log["string"], func() {
-			log["string"].Error("Empty message while parsing ms")
-		})
+		err := logger.StrToError(log, "Empty message while parsing ms")
 		return nil, err
 	}
 
 	log["console"].Debug("message:  %v\n", msg)
 
-	dataSplit := strings.Split(msg.Content.(string), ";")
+	dataSplit := strings.Split(msg.Content, ";")
 
 	expectedSplitCount := 5
 	if len(dataSplit) != expectedSplitCount {
-		err := logger.StrToError(log["string"], func() {
-			log["string"].Error("Expected %d values while parsing ms, got: %v", expectedSplitCount, dataSplit)
-		})
+		err := logger.StrToError(log, "Expected %d values while parsing ms, got: %v", expectedSplitCount, dataSplit)
 		return nil, err
 	}
 
@@ -277,8 +278,8 @@ func parseMsFromMessage(msg protocol.Message) (*protocol.MsInfo, error) {
 func (lb *LoadBalancer) connectToMicroservice(ms *protocol.MsInfo) (*protocol.Connection, error) {
 	address := net.JoinHostPort(ms.Host, ms.Port)
 
-	conn := protocol.TryToConnect(address)
-	if conn == nil {
+	conn, err := protocol.TryToConnect(address, 5*time.Second)
+	if err != nil {
 		return nil, fmt.Errorf("timeout - connecting to microservice %s", address)
 	}
 
@@ -292,19 +293,19 @@ func (lb *LoadBalancer) connectToMicroservice(ms *protocol.MsInfo) (*protocol.Co
 	})
 	//TODO: also check if ms sent you response
 	if err != nil {
-		return nil, logger.StrToErrorNew(log, "Sending handshake to microservice %v", err)
+		return nil, logger.StrToError(log, "Sending handshake to microservice %v", err)
 	} else if handshakeResp.Code != protocol.SUCCESS || handshakeResp.Type != protocol.HELLO {
-		return nil, logger.StrToErrorNew(log, "Response from microservice %v", handshakeResp)
+		return nil, logger.StrToError(log, "Response from microservice %v", handshakeResp)
 	}
 
 	return conn, nil
 }
 
 func (lb *LoadBalancer) handleRecover(request protocol.Message) protocol.Message {
-	var services map[protocol.ServiceType][]*protocol.MsInfo
 
-	log["console"].Debug("ms string: %v", request.Content)
-	err := json.DecodeContent(request.Content, &services)
+	log["console"].Debug("request handle recover: %v", request)
+
+	services, err := json.FromJSON[map[protocol.ServiceType][]*protocol.MsInfo](request.Content)
 	if err != nil {
 		return protocol.Message{
 			ID:      request.ID,
@@ -386,7 +387,6 @@ func (lb *LoadBalancer) AsyncEvent(request protocol.Message, conn *protocol.Conn
 		response = lb.handleRecover(request)
 	//TODO: later extend this to parsing if update should add, delete or update ms data  (add - add, del - delete, nothing - just update) as a 6th part in msg
 	case protocol.UPDATE:
-		log["console"].Debug("Got update from controller")
 		//update microservice data
 		ms, err := parseMsFromMessage(request)
 		if err != nil {

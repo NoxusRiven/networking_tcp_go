@@ -36,5 +36,6 @@ func main() {
 	err = api_gateway.Start(addr)
 	if err != nil {
 		fmt.Println("Error:", err)
+		os.Exit(1)
 	}
 }

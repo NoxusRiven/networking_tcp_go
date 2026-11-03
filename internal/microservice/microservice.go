@@ -4,7 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"net"
-	crypto "networking/tcp/internal/cryptography"
+	crypto "networking/tcp/internal/crypto"
 	"networking/tcp/internal/logger"
 	"networking/tcp/internal/protocol"
 	"os"
@@ -96,7 +96,6 @@ func (ms *Microservice) handleConnection(nc net.Conn) {
 	}
 
 	if msg.Content == "AGENT" {
-		log["console"].Debug("Found agent conn")
 		ms.agentConn = conn
 		go ms.SendHeartBeat(conn)
 	} else {

@@ -31,6 +31,7 @@ const ()
 type Logger interface {
 	Debug(fstring string, args ...any)
 	Info(fstring string, args ...any)
+	Warning(fstring string, args ...any)
 	Error(fstring string, args ...any)
 }
 

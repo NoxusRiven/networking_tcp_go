@@ -56,7 +56,7 @@ type Message struct {
 	Type         MessageType `json:"type"`
 	IsStream     bool        `json:"isStream,omitempty"`
 	Code         CodeType    `json:"code,omitempty"`
-	Content      any         `json:"content,omitempty"`
+	Content      string      `json:"content,omitempty"`
 }
 
 func Send(writer *bufio.Writer, msg Message) error {
@@ -85,4 +85,8 @@ func Receive(reader *bufio.Reader) (Message, error) {
 	err = json.Unmarshal(raw, &msg)
 
 	return msg, err
+}
+
+func (resp *Message) IsCorrect(t MessageType) bool {
+	return resp.Type == t || resp.Code == SUCCESS
 }

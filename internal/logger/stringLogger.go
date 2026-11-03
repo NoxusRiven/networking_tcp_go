@@ -20,12 +20,16 @@ func (s *StringLogger) Debug(fstring string, args ...any) {
 	s.Buffer.WriteString(s.Base.formatMessage("DEBUG", fmt.Sprintf(fstring, args...)) + "\n")
 }
 
-func (s *StringLogger) Error(fstring string, args ...any) {
-	s.Buffer.WriteString(s.Base.formatMessage("ERROR", fmt.Sprintf(fstring, args...)) + "\n")
-}
-
 func (s *StringLogger) Info(fstring string, args ...any) {
 	s.Buffer.WriteString(s.Base.formatMessage("INFO", fmt.Sprintf(fstring, args...)) + "\n")
+}
+
+func (s *StringLogger) Warning(fstring string, args ...any) {
+	s.Buffer.WriteString(s.Base.formatMessage("WARNING", fmt.Sprintf(fstring, args...)) + "\n")
+}
+
+func (s *StringLogger) Error(fstring string, args ...any) {
+	s.Buffer.WriteString(s.Base.formatMessage("ERROR", fmt.Sprintf(fstring, args...)) + "\n")
 }
 
 func (s *StringLogger) String() string {
@@ -42,15 +46,7 @@ func GetString(log Logger, f func()) string {
 	return "logger.GetString(): Error while coverting Logger to StringLogger"
 }
 
-// ! depracted
-// ! change its usage in other files
-func StrToError(log Logger, f func()) error {
-	str := GetString(log, f)
-
-	return fmt.Errorf("%s", str)
-}
-
-func StrToErrorNew(log Loggers, fstr string, args ...any) error {
+func StrToError(log Loggers, fstr string, args ...any) error {
 	l := log["string"]
 	str := GetString(l, func() { l.Error(fstr, args) })
 
