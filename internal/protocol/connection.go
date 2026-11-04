@@ -120,7 +120,7 @@ func (c *Connection) SendRequest(msg Message) (Message, error) {
 	select {
 	case resp := <-ch:
 		return resp, nil
-	case <-time.After(5 * time.Second):
+	case <-time.After(20 * time.Second):
 		c.Mu.Lock()
 		delete(c.pending, msg.ID)
 		c.Mu.Unlock()

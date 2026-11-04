@@ -48,7 +48,6 @@ const (
 	ERROR   CodeType = 400
 )
 
-// TODO: add connection type (stream, non-stream itp) and fix shutting of channels
 type Message struct {
 	ID           string      `json:"ID,omitempty"`
 	SessionID    string      `json:"sessionID,omitempty"`

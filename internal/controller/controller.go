@@ -132,7 +132,7 @@ func (c *Controller) run() error {
 
 	go c.acceptConnection()
 
-	//go c.cacheStateToFile()
+	go c.cacheStateToFile()
 
 	return nil
 }
@@ -455,16 +455,22 @@ func (c *Controller) recoverStateFromFile() error {
 	}
 
 	dataJson := string(fileData)
-	controllerState, err := json.FromJSON[*Controller](dataJson)
+	prevState, err := json.FromJSON[*Controller](dataJson)
 	if err != nil {
 		return err
 	}
 
-	c = controllerState
+	c.BASE_PORT_AGENT = prevState.BASE_PORT_AGENT
+	c.BASE_PORT_LBALANCER = prevState.BASE_PORT_LBALANCER
+	c.HOST_AGENT = prevState.HOST_AGENT
+	c.HOST_LBALANCER = prevState.HOST_LBALANCER
+	c.NextID = prevState.NextID
+	c.PORT = prevState.PORT
+	c.Microservices = prevState.Microservices
 
 	//old maps are invalid but nodeInfo is, store old data and make new maps
-	lbInfo := c.LbInfo
-	agentInfo := c.AgentInfo
+	lbInfo := prevState.LbInfo
+	agentInfo := prevState.AgentInfo
 
 	c.LbInfo = make(map[string]*protocol.LBalancerInfo)
 	c.lbConn = make(map[string]*protocol.Connection)
@@ -475,34 +481,52 @@ func (c *Controller) recoverStateFromFile() error {
 	log["console"].Info("Recovered state from file.")
 	log["console"].Debug("Services: %v\n, Agents: %v\n, Lbs: %v", c.Microservices, agentInfo, lbInfo)
 
+	//TODO: maybe later add waitgroup to wait for rutines to finish, but take api in equation
+	var wg sync.WaitGroup
+
 	//recover state from data
 	//this will create new maps
-	for _, lb := range lbInfo {
-		if err := c.connectToLB(lb); err != nil {
-			log["console"].Warning("Cant connect to lb when recovering: %v", err)
-			log["console"].Info("Restarting lb %v!", lb)
-			go c.restartLb(lb)
-		} else {
-			log["console"].Debug("Connected to lb")
-		}
-	}
+	go func() {
+		defer wg.Done()
+		for _, agent := range agentInfo {
+			if err := c.connectToAgent(agent); err != nil {
+				log["console"].Warning("Cant connect to agent when recovering: %v", err)
+				log["console"].Info("Restarting agent %v!", agent)
 
-	for _, agent := range agentInfo {
-		if err := c.connectToAgent(agent); err != nil {
-			log["console"].Warning("Cant connect to agent when recovering: %v", err)
-			log["console"].Info("Restarting agent %v!", agent)
+				wg.Add(1)
 
-			go c.restartAgent(agent)
-		} else {
-			log["console"].Debug("Connected to agent")
+				go c.restartAgent(agent)
+			} else {
+				log["console"].Debug("Connected to agent")
+			}
 		}
-	}
+	}()
+
+	go func() {
+		defer wg.Done()
+
+		for _, lb := range lbInfo {
+			if err := c.connectToLB(lb); err != nil {
+				log["console"].Warning("Cant connect to lb when recovering: %v", err)
+				log["console"].Info("Restarting lb %v!", lb)
+
+				wg.Add(1)
+
+				go c.restartLb(lb)
+			} else {
+				log["console"].Debug("Connected to lb")
+			}
+		}
+	}()
+
+	wg.Wait()
 
 	//connection to api isnt renewed because api will try to connect to controller by itself
 	if err = c.run(); err != nil {
 		return err
 	}
 
+	//! this is the reason why controller starts again
 	if err = c.syncWithAPI(); err != nil {
 		return err
 	}
@@ -695,7 +719,7 @@ func (c *Controller) connectToAgent(agent *protocol.AgentInfo) error {
 
 	conn, err := protocol.TryToConnect(address, 3*time.Second)
 	if err != nil {
-		return logger.StrToError(log, "timeout connecting to agent\n")
+		return logger.StrToError(log, "timeout connecting to agent: %v", err)
 	}
 
 	conn.Mu.Lock()
@@ -703,7 +727,6 @@ func (c *Controller) connectToAgent(agent *protocol.AgentInfo) error {
 	c.AgentInfo[conn.ID] = agent
 	conn.Mu.Unlock()
 
-	//c.Register(conn, protocol.ConnAgent, agent.ID)
 	agent.LastHeartbeat = time.Now()
 
 	go conn.ReceiveLoop(c)
@@ -762,6 +785,9 @@ func (c *Controller) KillAllAgents() {
 			continue
 		}
 		a.Process.Kill()
+
+		conn := c.agentsConn[a.ID]
+		conn.Close()
 	}
 
 	// reset maps
@@ -787,22 +813,29 @@ func (c *Controller) updateAgentHeartbeat(agentConnID string) {
 func (c *Controller) restartAgent(agent *protocol.AgentInfo) {
 
 	var prevConn *protocol.Connection
+	var ok bool
 	if agent.Process == nil {
-		goto noProcess
+		log["console"].Debug("agent: %v process nil", agent.ID)
+		goto newAgent
 	}
 	//make sure agent process is killed
 	if err := agent.Process.Kill(); err != nil {
 		log["console"].Warning("killing agent %v process: %v", agent.ID, err)
 	}
 
-	prevConn = c.agentsConn[agent.ID]
-	//defer c.Remove(prevConn, agent.ID, protocol.ConnAgent)
+	prevConn, ok = c.agentsConn[agent.ID]
+	if !ok {
+		log["console"].Debug("agent: %v previous connection nil", agent.ID)
+		goto newAgent
+	}
+
+	delete(c.AgentInfo, prevConn.ID)
 
 	if err := prevConn.Nc.Close(); err != nil {
 		log["console"].Warning("close previous agent connection: %v", err)
 	}
 
-noProcess:
+newAgent:
 	cmd := exec.Command(
 		platform.Executable("agent"),
 		"--port", agent.Port,
@@ -879,7 +912,7 @@ func (c *Controller) connectToLB(lb *protocol.LBalancerInfo) error {
 
 	conn, err := protocol.TryToConnect(address, 3*time.Second)
 	if err != nil {
-		return logger.StrToError(log, "timeout connecting to loadbalancer\n")
+		return logger.StrToError(log, "timeout connecting to loadbalancer: %v", err)
 	}
 
 	conn.Mu.Lock()
@@ -914,6 +947,9 @@ func (c *Controller) KillAllLoadBalancers() {
 			continue
 		}
 		lb.Process.Kill()
+
+		conn := c.lbConn[lb.ID]
+		conn.Close()
 	}
 
 	// reset maps
@@ -949,7 +985,6 @@ func (c *Controller) restartLb(lb *protocol.LBalancerInfo) {
 	}
 
 	prevConn = c.lbConn[lb.ID]
-	//defer c.Remove(prevConn, lb.ID, protocol.ConnLB)
 
 	if err := prevConn.Nc.Close(); err != nil {
 		log["console"].Warning("close previous lb connection: %v", err)
