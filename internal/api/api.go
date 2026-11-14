@@ -231,14 +231,59 @@ func (api *APIGateway) syncLoadBalancers(msg protocol.Message) error {
 	}
 
 	log["console"].Debug("Converted json into lb list")
-	for _, lb := range lbList {
+	// hasLB := len(api.lbInfo) > 0
+	// var skip []bool
+	// for i, lb := range lbList {
+	// 	log["console"].Debug("LB: %s:%s, ID: %s", lb.Host, lb.Port, lb.ID)
+	// 	if hasLB {
+	// 		for _, l := range api.lbInfo {
+	// 			if l.ID == lb.ID {
+	// 				skip[i] = true
+	// 			}
+	// 		}
+	// 	}
+	// }
+
+	// for i, lb := range lbList {
+	// 	if !skip[i] {
+	// 		api.handleConnectionToLB(lb)
+	// 	}
+	// }
+
+	existingByID := make(map[string]*protocol.LBalancerInfo)
+	for _, l := range api.lbInfo {
+		existingByID[l.ID] = l
+	}
+
+	hasLB := len(existingByID) > 0
+	skip := make([]bool, len(lbList))
+
+	// 2. Iterujemy po nowej liście i sprawdzamy O(1) dla każdego elementu
+	for i, lb := range lbList {
 		log["console"].Debug("LB: %s:%s, ID: %s", lb.Host, lb.Port, lb.ID)
+
+		if hasLB {
+			if existingLB, exists := existingByID[lb.ID]; exists {
+				//change more fields
+				existingLB.ID = lb.ID
+				existingLB.NodeID = lb.NodeID
+				existingLB.Host = lb.Host
+				existingLB.Port = lb.Port
+				existingLB.Microservices = lb.Microservices
+				existingLB.Status = lb.Status
+
+				skip[i] = true
+				log["console"].Debug("Updated existing LB data for ID: %s", lb.ID)
+			}
+		}
 	}
 
-	for _, lb := range lbList {
-		api.handleConnectionToLB(lb)
+	for i, lb := range lbList {
+		if !skip[i] {
+			log["console"].Debug("Connecting to new LB: %s:%s, ID: %s", lb.Host, lb.Port, lb.ID)
+			api.handleConnectionToLB(lb)
+		}
 	}
-
 	return nil
 }
 
@@ -249,7 +294,7 @@ func (api *APIGateway) messageWorker(conn *protocol.Connection) {
 	for msgEx := range api.requestChannelMap[lb.ID] {
 		_, ok := api.lbInfo[conn.ID]
 		if !ok {
-			log["console"].Debug("None existant connectionconn =  - stopping messageWroker\n")
+			log["console"].Debug("None existant connection conn =  - stopping messageWroker\n")
 			return
 		}
 
@@ -456,13 +501,25 @@ func (api *APIGateway) ReceiveHeartBeat(msg protocol.Message, conn *protocol.Con
 func (api *APIGateway) AsyncEvent(msg protocol.Message, conn *protocol.Connection) {
 	switch msg.Type {
 	case protocol.UPDATE:
+		code := protocol.SUCCESS
 		if err := api.syncLoadBalancers(msg); err != nil {
-			log["console"].Error("Async event: %v", err)
+			log["console"].Error("Async event - syncLoadBalancer(): %v", err)
+			code = protocol.ERROR
+		}
+
+		if err := protocol.Send(conn.RW.Writer, protocol.Message{
+			ID:   msg.ID,
+			Type: msg.Type,
+			Code: code,
+		}); err != nil {
+			log["console"].Error("Async event - Send(): %v", err)
+			return
 		}
 	default:
 		//log["console"].Debug("Forwarding to Client %v", msg)
 
 		log["console"].Error("Unsuported async msg: %v", msg)
+		return
 	}
 }
 

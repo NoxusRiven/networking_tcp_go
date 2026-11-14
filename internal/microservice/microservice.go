@@ -83,8 +83,6 @@ func (ms *Microservice) handleConnection(nc net.Conn) {
 		return
 	}
 
-	log["console"].Debug("got message %v", msg)
-
 	err = protocol.Send(conn.RW.Writer, protocol.Message{
 		ID:   msg.ID,
 		Type: msg.Type,
@@ -135,8 +133,6 @@ func (ms *Microservice) Work(conn *protocol.Connection) {
 		} else {
 			go ms.Service.HandleRequest(request)
 		}
-
-		//message that work has ended
 	}
 }
 

@@ -81,43 +81,48 @@ func NewController() *Controller {
 	}
 }
 
-func (c *Controller) setup() (error, bool) {
-	//if cache file exists dont start from scratch so just return
-	err := c.recoverStateFromFile()
-	if err == nil {
-		return nil, true
+func (c *Controller) setup() (bool, error) {
+	// check if cache file exists
+	noFile, err := c.recoverStateFromFile()
+
+	// critical error
+	if err != nil && !noFile {
+		return false, err
 	}
 
-	log["console"].Warning("Recover state from file: %v", err)
+	// fully recovered if there was a file and no errors accured
+	recovered := !noFile && (err == nil)
 
-	//get config
+	if noFile {
+		log["console"].Warning("Cache file not found, starting from scratch: %v", err)
+	}
+
 	conf, err := config.ReadConfigFile()
 	if err != nil {
-		return err, false
+		return false, err
 	}
 
-	//set values
 	agentConf, err := conf.FindNodeByName(config.AGENT_CONF)
 	if err != nil {
-		return err, false
+		return false, err
 	}
 	c.BASE_PORT_AGENT = agentConf.Port
 	c.HOST_AGENT = agentConf.Host
 
 	lbConf, err := conf.FindNodeByName(config.LB_CONF)
 	if err != nil {
-		return err, false
+		return false, err
 	}
 	c.BASE_PORT_LBALANCER = lbConf.Port
 	c.HOST_LBALANCER = lbConf.Host
 
 	controllerConf, err := conf.FindNodeByName(config.CONTROLLER_CONF)
 	if err != nil {
-		return err, false
+		return false, err
 	}
 	c.PORT = controllerConf.Port
 
-	return nil, false
+	return recovered, nil
 }
 
 func (c *Controller) run() error {
@@ -137,10 +142,10 @@ func (c *Controller) run() error {
 	return nil
 }
 
-// starts and accepts api and system connections
+// starts and accepts api
 func (c *Controller) Start() error {
 
-	err, recovered := c.setup()
+	recovered, err := c.setup()
 	if err != nil {
 		return err
 	}
@@ -245,6 +250,33 @@ func (c *Controller) AsyncEvent(msg protocol.Message, conn *protocol.Connection)
 			Type:    msg.Type,
 			Code:    protocol.SUCCESS,
 			Content: msJson,
+		}
+	case protocol.UPDATE:
+		node := msg.Content
+
+		if node == "LOADBALANCER" {
+			lb := c.LbInfo[conn.ID]
+			msData := lb.Microservices
+
+			json, err := json.ToJSON(msData)
+			if err != nil {
+				errStr := fmt.Sprintf("To Json: %s", err)
+				log["console"].Error(errStr)
+				response = protocol.Message{
+					ID:      msg.ID,
+					Type:    msg.Type,
+					Code:    protocol.ERROR,
+					Content: errStr,
+				}
+				break
+			}
+
+			response = protocol.Message{
+				ID:      msg.ID,
+				Type:    msg.Type,
+				Code:    protocol.SUCCESS,
+				Content: json,
+			}
 		}
 
 	default:
@@ -447,17 +479,17 @@ func (c *Controller) cacheStateToFile() {
 	}
 }
 
-func (c *Controller) recoverStateFromFile() error {
+func (c *Controller) recoverStateFromFile() (bool, error) {
 	//recover data from file
 	fileData, err := os.ReadFile(CACHE_FILE)
 	if err != nil {
-		return err
+		return true, err
 	}
 
 	dataJson := string(fileData)
 	prevState, err := json.FromJSON[*Controller](dataJson)
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	c.BASE_PORT_AGENT = prevState.BASE_PORT_AGENT
@@ -481,11 +513,17 @@ func (c *Controller) recoverStateFromFile() error {
 	log["console"].Info("Recovered state from file.")
 	log["console"].Debug("Services: %v\n, Agents: %v\n, Lbs: %v", c.Microservices, agentInfo, lbInfo)
 
+	//connection to api isnt renewed because api will try to connect to controller by itself
+	if err = c.run(); err != nil {
+		return false, err
+	}
+
 	//TODO: maybe later add waitgroup to wait for rutines to finish, but take api in equation
 	var wg sync.WaitGroup
-
 	//recover state from data
 	//this will create new maps
+
+	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		for _, agent := range agentInfo {
@@ -494,14 +532,17 @@ func (c *Controller) recoverStateFromFile() error {
 				log["console"].Info("Restarting agent %v!", agent)
 
 				wg.Add(1)
-
-				go c.restartAgent(agent)
+				go func(a *protocol.AgentInfo) {
+					defer wg.Done()
+					c.restartAgent(a)
+				}(agent)
 			} else {
 				log["console"].Debug("Connected to agent")
 			}
 		}
 	}()
 
+	wg.Add(1)
 	go func() {
 		defer wg.Done()
 
@@ -511,8 +552,10 @@ func (c *Controller) recoverStateFromFile() error {
 				log["console"].Info("Restarting lb %v!", lb)
 
 				wg.Add(1)
-
-				go c.restartLb(lb)
+				go func(l *protocol.LBalancerInfo) {
+					defer wg.Done()
+					c.restartLb(l)
+				}(lb)
 			} else {
 				log["console"].Debug("Connected to lb")
 			}
@@ -521,17 +564,11 @@ func (c *Controller) recoverStateFromFile() error {
 
 	wg.Wait()
 
-	//connection to api isnt renewed because api will try to connect to controller by itself
-	if err = c.run(); err != nil {
-		return err
-	}
-
-	//! this is the reason why controller starts again
 	if err = c.syncWithAPI(); err != nil {
-		return err
+		return false, err
 	}
 
-	return nil
+	return false, nil
 }
 
 func (c *Controller) HandShake(conn *protocol.Connection) {
@@ -721,6 +758,9 @@ func (c *Controller) connectToAgent(agent *protocol.AgentInfo) error {
 	if err != nil {
 		return logger.StrToError(log, "timeout connecting to agent: %v", err)
 	}
+
+	//expicit delcaration that connection to agent SHOULDN'T reconnect by itself
+	conn.Reconnecting = false
 
 	conn.Mu.Lock()
 	c.agentsConn[agent.ID] = conn
@@ -975,8 +1015,10 @@ func (c *Controller) updateLBHeartbeat(id string) {
 func (c *Controller) restartLb(lb *protocol.LBalancerInfo) {
 
 	var prevConn *protocol.Connection
+	var ok bool
 	if lb.Process == nil {
-		goto noProcess
+		log["console"].Debug("No lb process during restart")
+		goto newLB
 	}
 
 	//make sure lb process is killed
@@ -984,13 +1026,19 @@ func (c *Controller) restartLb(lb *protocol.LBalancerInfo) {
 		log["console"].Warning("killing lb %v process: %v", lb.ID, err)
 	}
 
-	prevConn = c.lbConn[lb.ID]
+	prevConn, ok = c.lbConn[lb.ID]
+	if !ok {
+		log["console"].Debug("lb: %v previous connection nil", lb.ID)
+		goto newLB
+	}
+
+	delete(c.LbInfo, prevConn.ID)
 
 	if err := prevConn.Nc.Close(); err != nil {
 		log["console"].Warning("close previous lb connection: %v", err)
 	}
 
-noProcess:
+newLB:
 	cmd := exec.Command(
 		platform.Executable("lb"),
 		"--port", lb.Port,

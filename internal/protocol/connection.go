@@ -21,6 +21,8 @@ const (
 type Connection struct {
 	ID string
 
+	Reconnecting bool
+
 	Nc net.Conn
 	RW *bufio.ReadWriter
 
@@ -32,10 +34,12 @@ type Connection struct {
 	closeOnce sync.Once
 }
 
+// All connection should try to reconnect unless u have a reason/other handlers regarding this topic
 func NewConnection(nc net.Conn) *Connection {
 	return &Connection{
-		Nc:      nc,
-		pending: make(map[string]chan Message),
+		Reconnecting: true,
+		Nc:           nc,
+		pending:      make(map[string]chan Message),
 		RW: bufio.NewReadWriter(
 			bufio.NewReader(nc),
 			bufio.NewWriter(nc),
@@ -54,14 +58,12 @@ func (c *Connection) ReceiveLoop(node Node) {
 		msg, err := Receive(c.RW.Reader)
 		if err != nil {
 			fmt.Println("[Receive Loop][ERROR]", c.ID, ": ", err)
-			// if !c.tryToReconnect() {
-			// 	return
-			// }
-			// //renew handshake for this connection
-			// node.HandShake(c)
-			// continue
-
-			return
+			if !c.tryToReconnect() {
+				return
+			}
+			//renew handshake for this connection
+			go node.HandShake(c)
+			continue
 		}
 
 		if ch, ok := c.pending[msg.ID]; ok {
@@ -120,7 +122,7 @@ func (c *Connection) SendRequest(msg Message) (Message, error) {
 	select {
 	case resp := <-ch:
 		return resp, nil
-	case <-time.After(20 * time.Second):
+	case <-time.After(15 * time.Second):
 		c.Mu.Lock()
 		delete(c.pending, msg.ID)
 		c.Mu.Unlock()
@@ -162,11 +164,12 @@ func (c *Connection) ReceiveLoopChan(node Node) {
 		if err != nil {
 			fmt.Println("[Receive Loop Chan][ERROR]:", c.ID, ": ", err)
 			if !c.tryToReconnect() {
+				c.Close()
 				return
 			}
 
 			//renew handshake for this connection
-			node.HandShake(c)
+			go node.HandShake(c)
 			continue
 		}
 
@@ -193,6 +196,11 @@ func (c *Connection) ReceiveLoopChan(node Node) {
 }
 
 func (c *Connection) tryToReconnect() bool {
+
+	if !c.Reconnecting {
+		return false
+	}
+
 	addr := c.Nc.RemoteAddr().String()
 
 	conn, err := TryToConnect(addr, 10*time.Second)
@@ -236,5 +244,5 @@ func TryToConnect(addr string, deadlineDur time.Duration) (*Connection, error) {
 
 	fmt.Println()
 
-	return nil, fmt.Errorf("[TryToConnect]: Connection failed to %v", addr)
+	return nil, fmt.Errorf("[TryToConnect]: Connection failed %v", addr)
 }
