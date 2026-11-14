@@ -1,8 +1,10 @@
-package json_helper
+package json
 
-import "encoding/json"
+import (
+	"encoding/json"
+)
 
-//!TODO: DecodeContent and both EncodeContent are depricated clean code and get rid of those functions
+// !TODO: DecodeContent and both EncodeContent are depricated clean code and get rid of those functions
 func DecodeContent(content any, out any) error {
 	switch v := content.(type) {
 	case string:
@@ -44,7 +46,9 @@ func FromJSON[T any](jsonStr string) (T, error) {
 
 // Any object -> JSON string
 func ToJSON(obj any) (string, error) {
-	data, err := json.Marshal(obj)
+	//indent for debug only
+	indent := "    "
+	data, err := json.MarshalIndent(obj, "", indent)
 	if err != nil {
 		return "", err
 	}

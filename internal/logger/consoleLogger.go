@@ -28,10 +28,14 @@ func (c *ConsoleLogger) Debug(fstring string, args ...any) {
 	fmt.Fprintln(c.Out, c.Base.formatMessage("DEBUG", fmt.Sprintf(fstring, args...)))
 }
 
-func (c *ConsoleLogger) Error(fstring string, args ...any) {
-	fmt.Fprintln(c.Err, c.Base.formatMessage("ERROR", fmt.Sprintf(fstring, args...)))
-}
-
 func (c *ConsoleLogger) Info(fstring string, args ...any) {
 	fmt.Fprintln(c.Err, c.Base.formatMessage("INFO", fmt.Sprintf(fstring, args...)))
+}
+
+func (c *ConsoleLogger) Warning(fstring string, args ...any) {
+	fmt.Fprintln(c.Err, c.Base.formatMessage("WARNING", fmt.Sprintf(fstring, args...)))
+}
+
+func (c *ConsoleLogger) Error(fstring string, args ...any) {
+	fmt.Fprintln(c.Err, c.Base.formatMessage("ERROR", fmt.Sprintf(fstring, args...)))
 }

@@ -9,19 +9,23 @@ import (
 )
 
 func main() {
-	controller, err := controller.NewController()
+	var sigChan chan os.Signal
+	var sig os.Signal
+
+	controller := controller.NewController()
+	err := controller.Start()
 	if err != nil {
-		panic(err)
+		fmt.Println("Controller error:", err)
+		goto cleanup
 	}
 
-	controller.Start()
-
-	sigChan := make(chan os.Signal, 1)
+	sigChan = make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 
-	sig := <-sigChan
+	sig = <-sigChan
 	fmt.Println("Received signal:", sig)
 
+cleanup:
 	controller.KillAllAgents()
 	controller.KillAllLoadBalancers()
 

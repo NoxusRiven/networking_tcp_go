@@ -35,7 +35,7 @@ tmux new-window -t workspace \
     "$SHELL_CMD"
 
 tmux split-window -t workspace:control -h \
-    -c "$PROJECT_HOME" \
+    -c "$PROJECT_HOME/script" \
     "$SHELL_CMD"
 
 tmux new-window -t workspace \

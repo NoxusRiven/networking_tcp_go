@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"net"
 	"networking/tcp/internal/config"
-	crypto "networking/tcp/internal/cryptography"
-	json "networking/tcp/internal/json_helper"
+	"networking/tcp/internal/crypto"
+	"networking/tcp/internal/json"
 	"networking/tcp/internal/logger"
 	"networking/tcp/internal/platform"
 	"networking/tcp/internal/protocol"
@@ -16,11 +16,10 @@ import (
 	"time"
 )
 
-/**
-
-*! requests to load balancer should be in queue channel like in api gateway
-
- */
+const (
+	CACHE_FILE = "controller.cache.json"
+	//TMP_CACHE_FILE = "controller.cache.json.tmp"
+)
 
 var log logger.Loggers = logger.NewLoggers(
 	logger.WithConsole(os.Stdout, os.Stderr),
@@ -49,82 +48,117 @@ type Controller struct {
 	//? if controller will connect to more then 1 api make it same as agent storage
 	apiConn *protocol.Connection
 
-	agentsInfo map[string]*protocol.AgentInfo
+	AgentInfo  map[string]*protocol.AgentInfo `json:"agents"`
 	agentsConn map[string]*protocol.Connection
 
-	lbInfo map[string]*protocol.LBalancerInfo
+	LbInfo map[string]*protocol.LBalancerInfo `json:"lbs"`
 	lbConn map[string]*protocol.Connection
 
-	microservices map[protocol.ServiceType][]*protocol.MsInfo
+	Microservices map[protocol.ServiceType][]*protocol.MsInfo `json:"services"`
 
 	//TODO: store list of available hosts
 
 	mu sync.RWMutex
 
-	nextID uint32 // id tracker of agent and load balancer
+	NextID uint32 `json:"nextID"` // id tracker of agent and load balancer
 }
 
 // ##################################### STRUCTURES #####################################
 
 // ################################## CORE FUNCTIONS #####################################
-func NewController() (*Controller, error) {
-	//get config
-	conf, err := config.ReadConfigFile()
-	if err != nil {
-		return nil, err
-	}
-
-	//set values
-	agentConf, err := conf.FindNodeByName(config.AGENT_CONF)
-	if err != nil {
-		return nil, err
-	}
-	lbConf, err := conf.FindNodeByName(config.LB_CONF)
-	if err != nil {
-		return nil, err
-	}
-	controllerConf, err := conf.FindNodeByName(config.CONTROLLER_CONF)
-	if err != nil {
-		return nil, err
-	}
-	port := controllerConf.Port
-
-	apiListener, err := net.Listen("tcp", ":"+port)
-	if err != nil {
-		return nil, err
-	}
+func NewController() *Controller {
 
 	return &Controller{
-		BASE_PORT_AGENT: agentConf.Port,
-		HOST_AGENT:      agentConf.Host,
-
-		BASE_PORT_LBALANCER: lbConf.Port,
-		HOST_LBALANCER:      lbConf.Host,
-
-		PORT: port,
-
-		listener: apiListener,
-
-		agentsInfo: make(map[string]*protocol.AgentInfo),
+		AgentInfo:  make(map[string]*protocol.AgentInfo),
 		agentsConn: make(map[string]*protocol.Connection),
 
-		lbInfo: make(map[string]*protocol.LBalancerInfo),
+		LbInfo: make(map[string]*protocol.LBalancerInfo),
 		lbConn: make(map[string]*protocol.Connection),
 
-		microservices: make(map[protocol.ServiceType][]*protocol.MsInfo),
+		Microservices: make(map[protocol.ServiceType][]*protocol.MsInfo),
 
-		nextID: 0,
-	}, nil
+		NextID: 0,
+	}
 }
 
-// starts and accepts api and system connections
-func (c *Controller) Start() {
-	log["console"].Info("Controller started")
+func (c *Controller) setup() (bool, error) {
+	// check if cache file exists
+	noFile, err := c.recoverStateFromFile()
+
+	// critical error
+	if err != nil && !noFile {
+		return false, err
+	}
+
+	// fully recovered if there was a file and no errors accured
+	recovered := !noFile && (err == nil)
+
+	if noFile {
+		log["console"].Warning("Cache file not found, starting from scratch: %v", err)
+	}
+
+	conf, err := config.ReadConfigFile()
+	if err != nil {
+		return false, err
+	}
+
+	agentConf, err := conf.FindNodeByName(config.AGENT_CONF)
+	if err != nil {
+		return false, err
+	}
+	c.BASE_PORT_AGENT = agentConf.Port
+	c.HOST_AGENT = agentConf.Host
+
+	lbConf, err := conf.FindNodeByName(config.LB_CONF)
+	if err != nil {
+		return false, err
+	}
+	c.BASE_PORT_LBALANCER = lbConf.Port
+	c.HOST_LBALANCER = lbConf.Host
+
+	controllerConf, err := conf.FindNodeByName(config.CONTROLLER_CONF)
+	if err != nil {
+		return false, err
+	}
+	c.PORT = controllerConf.Port
+
+	return recovered, nil
+}
+
+func (c *Controller) run() error {
+	apiListener, err := net.Listen("tcp", ":"+c.PORT)
+	if err != nil {
+		return err
+	}
+
+	c.listener = apiListener
+
+	log["console"].Info("Controller started [::]:%v", c.PORT)
 
 	go c.acceptConnection()
+
+	go c.cacheStateToFile()
+
+	return nil
 }
 
-// ? after registering connection maybe start receive loop
+// starts and accepts api
+func (c *Controller) Start() error {
+
+	recovered, err := c.setup()
+	if err != nil {
+		return err
+	}
+
+	if !recovered {
+		if err := c.run(); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 // Node id is unused for API
 func (c *Controller) Register(conn *protocol.Connection, connType protocol.ConnectionType, nodeID string) string {
 	c.mu.Lock()
@@ -204,6 +238,46 @@ func (c *Controller) AsyncEvent(msg protocol.Message, conn *protocol.Connection)
 	switch msg.Type {
 	case protocol.CREATE:
 		response = c.handleCreate(msg)
+	case protocol.RECOVER:
+		lb := c.LbInfo[conn.ID]
+		msJson, err := json.ToJSON(lb.Microservices)
+		if err != nil {
+			panic(err)
+		}
+
+		response = protocol.Message{
+			ID:      msg.ID,
+			Type:    msg.Type,
+			Code:    protocol.SUCCESS,
+			Content: msJson,
+		}
+	case protocol.UPDATE:
+		node := msg.Content
+
+		if node == "LOADBALANCER" {
+			lb := c.LbInfo[conn.ID]
+			msData := lb.Microservices
+
+			json, err := json.ToJSON(msData)
+			if err != nil {
+				errStr := fmt.Sprintf("To Json: %s", err)
+				log["console"].Error(errStr)
+				response = protocol.Message{
+					ID:      msg.ID,
+					Type:    msg.Type,
+					Code:    protocol.ERROR,
+					Content: errStr,
+				}
+				break
+			}
+
+			response = protocol.Message{
+				ID:      msg.ID,
+				Type:    msg.Type,
+				Code:    protocol.SUCCESS,
+				Content: json,
+			}
+		}
 
 	default:
 		errStr := fmt.Sprintf("Unsupported NodeAsyncEvent type: %s", msg.Type)
@@ -225,17 +299,24 @@ func (c *Controller) AsyncEvent(msg protocol.Message, conn *protocol.Connection)
 func (c *Controller) handleCreate(msg protocol.Message) protocol.Message {
 	//first check if for some reason api doesnt know lb with this ms exists
 	var lb *protocol.LBalancerInfo = nil
-	mServices, ok := c.microservices[protocol.ServiceType(msg.Content.(string))]
+	mServices, ok := c.Microservices[protocol.ServiceType(msg.Content)]
 
 	//TODO: take first one, later do load
 	if ok {
 		log["console"].Debug("Found services that api though didnt existed")
 		ms := mServices[0]
-		for _, l := range c.lbInfo {
+		for _, l := range c.LbInfo {
 			if l.NodeID == ms.NodeID {
 				lb = l
 				break
 			}
+		}
+
+		lbJson, err := json.ToJSON(lb)
+		code := protocol.SUCCESS
+		if err != nil {
+			lbJson = err.Error()
+			code = protocol.ERROR
 		}
 
 		return protocol.Message{
@@ -243,12 +324,13 @@ func (c *Controller) handleCreate(msg protocol.Message) protocol.Message {
 			SessionID:    msg.SessionID,
 			ConnectionID: msg.ConnectionID,
 			Type:         protocol.UPDATE,
-			Content:      lb,
+			Code:         code,
+			Content:      lbJson,
 		}
 	}
 
 	// api gateway asks controller to create new service based on user request
-	_, lb, err := c.createNewService(protocol.ServiceType(msg.Content.(string)))
+	_, lb, err := c.createNewService(protocol.ServiceType(msg.Content))
 
 	if err != nil {
 		log["console"].Error("Error creating service: %v", err)
@@ -262,13 +344,21 @@ func (c *Controller) handleCreate(msg protocol.Message) protocol.Message {
 		}
 	} else {
 
+		lbJson, err := json.ToJSON(lb)
+		code := protocol.SUCCESS
+		if err != nil {
+			lbJson = err.Error()
+			code = protocol.ERROR
+		}
+
 		//update api lb data
 		return protocol.Message{
 			ID:           msg.ID,
 			SessionID:    msg.SessionID,
 			ConnectionID: msg.ConnectionID,
 			Type:         protocol.UPDATE,
-			Content:      lb,
+			Code:         code,
+			Content:      lbJson,
 		}
 	}
 
@@ -279,7 +369,7 @@ func (c *Controller) watchHealth(connID string) {
 	//! DO NOT SET DELAY LOWER THEN 5 sec - infinite unhealthy cykle
 	allowedDelay := 6 * time.Second
 
-	if lb, ok := c.lbInfo[connID]; ok {
+	if lb, ok := c.LbInfo[connID]; ok {
 		for {
 			timestamp := lb.LastHeartbeat
 			if time.Since(timestamp) > allowedDelay {
@@ -292,7 +382,7 @@ func (c *Controller) watchHealth(connID string) {
 
 			time.Sleep(1 * time.Second)
 		}
-	} else if agent, ok := c.agentsInfo[connID]; ok {
+	} else if agent, ok := c.AgentInfo[connID]; ok {
 		for {
 			timestamp := agent.LastHeartbeat
 			if time.Since(timestamp) > allowedDelay {
@@ -318,39 +408,167 @@ func (c *Controller) recoverConnections(conn *protocol.Connection) error {
 		Type: protocol.RECOVER,
 	}
 
-	if agent, ok := c.agentsInfo[conn.ID]; ok {
+	if agent, ok := c.AgentInfo[conn.ID]; ok {
 
 		recoverMsg.Content, err = json.EncodeContentStr(agent.Microservices)
 		if err != nil {
-			return logger.StrToErrorNew(log, "Encoding content: %v", err)
+			return logger.StrToError(log, "Encoding content: %v", err)
 		}
 
 		resp, err := conn.SendRequest(recoverMsg)
 		if err != nil {
-			return logger.StrToErrorNew(log, "Sending recover request: %v", err)
+			return logger.StrToError(log, "Sending recover request: %v", err)
 		} else if resp.Code != protocol.SUCCESS {
-			return logger.StrToErrorNew(log, "Sending recover request: %v", resp)
+			return logger.StrToError(log, "Sending recover request: %v", resp)
 		}
 
-	} else if lb, ok := c.lbInfo[conn.ID]; ok {
+	} else if lb, ok := c.LbInfo[conn.ID]; ok {
 
 		recoverMsg.Content, err = json.EncodeContentStr(lb.Microservices)
 		if err != nil {
-			return logger.StrToErrorNew(log, "Encoding content: %v", err)
+			return logger.StrToError(log, "Encoding content: %v", err)
 		}
 
 		resp, err := conn.SendRequest(recoverMsg)
 		if err != nil {
-			return logger.StrToErrorNew(log, "Sending recover request: %v", err)
+			return logger.StrToError(log, "Sending recover request: %v", err)
 		} else if resp.Code != protocol.SUCCESS {
-			return logger.StrToErrorNew(log, "Sending recover request: %v", resp)
+			return logger.StrToError(log, "Sending recover request: %v", resp)
 		}
 
 	} else {
-		return logger.StrToErrorNew(log, "agent and loadbalancer not found in connection %v", conn)
+		return logger.StrToError(log, "agent and loadbalancer not found in connection %v", conn)
 	}
 
 	return nil
+}
+
+// TODO!: if cache file is getting corrupted try saving to tmp file then to cache file (keep both files)
+func (c *Controller) cacheStateToFile() {
+	for {
+		time.Sleep(5 * time.Second)
+
+		file, err := os.OpenFile(CACHE_FILE, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0664)
+		if err != nil {
+			log["console"].Error("Opening file: %v", err)
+			return
+		}
+		defer file.Close()
+
+		controllerJson, err := json.ToJSON(c)
+		if err != nil {
+			log["console"].Error("Converting to JSON: %v", err)
+			return
+		}
+
+		size, err := file.Write([]byte(controllerJson))
+		if err != nil {
+			log["console"].Error("Writing to file: %v", err)
+			return
+		}
+
+		//force to flush contents to file
+		if err := file.Sync(); err != nil {
+			log["console"].Error("Sync file: %v", err)
+			return
+		}
+		file.Close()
+
+		log["console"].Debug("Succesfully written %v to file %v", size, CACHE_FILE)
+
+	}
+}
+
+func (c *Controller) recoverStateFromFile() (bool, error) {
+	//recover data from file
+	fileData, err := os.ReadFile(CACHE_FILE)
+	if err != nil {
+		return true, err
+	}
+
+	dataJson := string(fileData)
+	prevState, err := json.FromJSON[*Controller](dataJson)
+	if err != nil {
+		return false, err
+	}
+
+	c.BASE_PORT_AGENT = prevState.BASE_PORT_AGENT
+	c.BASE_PORT_LBALANCER = prevState.BASE_PORT_LBALANCER
+	c.HOST_AGENT = prevState.HOST_AGENT
+	c.HOST_LBALANCER = prevState.HOST_LBALANCER
+	c.NextID = prevState.NextID
+	c.PORT = prevState.PORT
+	c.Microservices = prevState.Microservices
+
+	//old maps are invalid but nodeInfo is, store old data and make new maps
+	lbInfo := prevState.LbInfo
+	agentInfo := prevState.AgentInfo
+
+	c.LbInfo = make(map[string]*protocol.LBalancerInfo)
+	c.lbConn = make(map[string]*protocol.Connection)
+
+	c.AgentInfo = make(map[string]*protocol.AgentInfo)
+	c.agentsConn = make(map[string]*protocol.Connection)
+
+	log["console"].Info("Recovered state from file.")
+	log["console"].Debug("Services: %v\n, Agents: %v\n, Lbs: %v", c.Microservices, agentInfo, lbInfo)
+
+	//connection to api isnt renewed because api will try to connect to controller by itself
+	if err = c.run(); err != nil {
+		return false, err
+	}
+
+	//TODO: maybe later add waitgroup to wait for rutines to finish, but take api in equation
+	var wg sync.WaitGroup
+	//recover state from data
+	//this will create new maps
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for _, agent := range agentInfo {
+			if err := c.connectToAgent(agent); err != nil {
+				log["console"].Warning("Cant connect to agent when recovering: %v", err)
+				log["console"].Info("Restarting agent %v!", agent)
+
+				wg.Add(1)
+				go func(a *protocol.AgentInfo) {
+					defer wg.Done()
+					c.restartAgent(a)
+				}(agent)
+			} else {
+				log["console"].Debug("Connected to agent")
+			}
+		}
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+
+		for _, lb := range lbInfo {
+			if err := c.connectToLB(lb); err != nil {
+				log["console"].Warning("Cant connect to lb when recovering: %v", err)
+				log["console"].Info("Restarting lb %v!", lb)
+
+				wg.Add(1)
+				go func(l *protocol.LBalancerInfo) {
+					defer wg.Done()
+					c.restartLb(l)
+				}(lb)
+			} else {
+				log["console"].Debug("Connected to lb")
+			}
+		}
+	}()
+
+	wg.Wait()
+
+	if err = c.syncWithAPI(); err != nil {
+		return false, err
+	}
+
+	return false, nil
 }
 
 func (c *Controller) HandShake(conn *protocol.Connection) {
@@ -364,8 +582,6 @@ func (c *Controller) String() string {
 
 // ################################# API FUNCTIONS ################################
 func (c *Controller) acceptConnection() {
-	log["console"].Info("Listening for connections on %s", c.listener.Addr())
-
 	for {
 		nc, err := c.listener.Accept()
 		if err != nil {
@@ -392,8 +608,6 @@ func (c *Controller) handleConnection(nc net.Conn) {
 
 	//to controller for now only api will connect
 	var response protocol.Message
-	lbList := make([]*protocol.
-		LBalancerInfo, 0, len(c.lbInfo))
 
 	if msg.Type != protocol.HELLO {
 		errMsg := "expected Handshake with type HELLO"
@@ -410,42 +624,19 @@ func (c *Controller) handleConnection(nc net.Conn) {
 	}
 
 	if msg.Content == "API" {
-		//response after receiving hello
-		err = protocol.Send(conn.RW.Writer, protocol.Message{
-			ID:       msg.ID,
-			Type:     msg.Type,
-			Code:     protocol.SUCCESS,
-			IsStream: true,
-			Content:  c.String(),
-		})
-		if err != nil {
-			log["console"].Error("Send response handshake: %v", err)
-		}
-
-		log["console"].Debug("Send api response handshake succesfully")
-
-		c.Register(conn, protocol.ConnAPI, "")
-		log["console"].Info("Connected: %s", conn.ID)
-
-		go conn.ReceiveLoop(c)
-
-		// create for the first time (both data structures are empty)
-		if len(c.lbInfo) == 0 && len(c.agentsInfo) == 0 {
-			// connection with api was correct so now create message node so api can connect to it
-			c.createNewMessageNode()
-		}
-
-		// convert map to list because api has to map data by itself
-		for _, lb := range c.lbInfo {
-			lbList = append(lbList, lb)
-		}
 
 		response = protocol.Message{
 			ID:      msg.ID,
-			Code:    protocol.SUCCESS,
 			Type:    msg.Type,
-			Content: lbList,
+			Code:    protocol.SUCCESS,
+			Content: c.String(),
 		}
+
+		c.Register(conn, protocol.ConnAPI, "")
+		log["console"].Info("Connected to api: %s", conn.ID)
+
+		go conn.ReceiveLoop(c)
+
 	} else {
 		errMsg := fmt.Sprintf("Unknow Node connected %v", msg)
 		log["console"].Error(errMsg)
@@ -468,15 +659,47 @@ send:
 }
 
 // this func will be called when loadbalancers and microservices change without api knowing it
-func (c *Controller) syncWithAPI(conn *protocol.Connection, newData any) error {
+func (c *Controller) syncWithAPI() error {
+	var lbs []*protocol.LBalancerInfo
+	for _, lb := range c.LbInfo {
+		if lb.Status == protocol.Healthy {
+			lbs = append(lbs, lb)
+		}
+	}
+
+	newData, err := json.ToJSON(lbs)
+	if err != nil {
+		return err
+	}
+
 	msg := protocol.Message{
 		ID:      crypto.GenerateID(crypto.MESSAGE_ID),
 		Type:    protocol.UPDATE,
 		Content: newData,
 	}
 
-	if err := protocol.Send(conn.RW.Writer, msg); err != nil {
-		return logger.StrToErrorNew(log, "send request: %v", err)
+	//wait for api conn to be established
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		time.Sleep(100 * time.Millisecond)
+
+		if c.apiConn != nil {
+			log["console"].Info("Api conn established!")
+			break
+		}
+
+		log["console"].Debug("Api conn not established yet...")
+	}
+
+	if c.apiConn == nil {
+		return logger.StrToError(log, "Failed to establish api conn")
+	}
+
+	resp, err := c.apiConn.SendRequest(msg)
+	if err != nil {
+		return logger.StrToError(log, "Sync api send request: %v", err)
+	} else if !resp.IsCorrect(msg.Type) {
+		return logger.StrToError(log, "Sync api send request: %v", resp)
 	}
 
 	return nil
@@ -486,7 +709,7 @@ func (c *Controller) syncWithAPI(conn *protocol.Connection, newData any) error {
 
 // ################################# AGENT FUNCTIONS ###############################
 func (c *Controller) GetNextNodeID() uint32 {
-	return atomic.AddUint32(&c.nextID, 1)
+	return atomic.AddUint32(&c.NextID, 1)
 }
 
 // createNewAgent spawns an agent process, assigns host:port, and registers it.
@@ -503,7 +726,7 @@ func (c *Controller) createNewAgent(port string, nodeID string) (*protocol.Agent
 	cmd.Stderr = os.Stderr
 
 	if err := cmd.Start(); err != nil {
-		return nil, logger.StrToErrorNew(log, "start agent process: %v\n", err)
+		return nil, logger.StrToError(log, "start agent process: %v\n", err)
 	}
 
 	log["console"].Info("Started agent process: %d", cmd.Process.Pid)
@@ -521,7 +744,7 @@ func (c *Controller) createNewAgent(port string, nodeID string) (*protocol.Agent
 	err := c.connectToAgent(agent)
 	if err != nil {
 		_ = cmd.Process.Kill()
-		return nil, logger.StrToErrorNew(log, "connect to agent: %v\n", err)
+		return nil, logger.StrToError(log, "connect to agent: %v\n", err)
 	}
 
 	log["console"].Debug("Agent started {ID:%s PID:%d}\n", id, cmd.Process.Pid)
@@ -531,17 +754,19 @@ func (c *Controller) createNewAgent(port string, nodeID string) (*protocol.Agent
 func (c *Controller) connectToAgent(agent *protocol.AgentInfo) error {
 	address := net.JoinHostPort(agent.Host, agent.Port)
 
-	conn := protocol.TryToConnect(address)
-	if conn == nil {
-		return logger.StrToErrorNew(log, "timeout connecting to agent\n")
+	conn, err := protocol.TryToConnect(address, 3*time.Second)
+	if err != nil {
+		return logger.StrToError(log, "timeout connecting to agent: %v", err)
 	}
+
+	//expicit delcaration that connection to agent SHOULDN'T reconnect by itself
+	conn.Reconnecting = false
 
 	conn.Mu.Lock()
 	c.agentsConn[agent.ID] = conn
-	c.agentsInfo[conn.ID] = agent
+	c.AgentInfo[conn.ID] = agent
 	conn.Mu.Unlock()
 
-	//c.Register(conn, protocol.ConnAgent, agent.ID)
 	agent.LastHeartbeat = time.Now()
 
 	go conn.ReceiveLoop(c)
@@ -554,9 +779,9 @@ func (c *Controller) connectToAgent(agent *protocol.AgentInfo) error {
 		Content: c.String(),
 	})
 	if err != nil {
-		return logger.StrToErrorNew(log, "Sending handshake to agent %v", err)
+		return logger.StrToError(log, "Sending handshake to agent %v", err)
 	} else if handshakeResp.Code != protocol.SUCCESS || handshakeResp.Type != protocol.HELLO || handshakeResp.Content != "AGENT" {
-		return logger.StrToErrorNew(log, "Response from agent %v", handshakeResp)
+		return logger.StrToError(log, "Response from agent %v", handshakeResp)
 	}
 
 	return nil
@@ -585,7 +810,7 @@ func (c *Controller) GetAgentConnByID(id string) *protocol.Connection {
 func (c *Controller) GetAgentInfoByID(id string) *protocol.AgentInfo {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	for _, a := range c.agentsInfo {
+	for _, a := range c.AgentInfo {
 		if a.ID == id {
 			return a
 		}
@@ -595,22 +820,25 @@ func (c *Controller) GetAgentInfoByID(id string) *protocol.AgentInfo {
 }
 
 func (c *Controller) KillAllAgents() {
-	for _, a := range c.agentsInfo {
+	for _, a := range c.AgentInfo {
 		if a == nil || a.Process == nil {
 			continue
 		}
 		a.Process.Kill()
+
+		conn := c.agentsConn[a.ID]
+		conn.Close()
 	}
 
 	// reset maps
-	c.agentsInfo = make(map[string]*protocol.AgentInfo)
+	c.AgentInfo = make(map[string]*protocol.AgentInfo)
 	c.agentsConn = make(map[string]*protocol.Connection)
 }
 
 func (c *Controller) updateAgentHeartbeat(agentConnID string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if agent, ok := c.agentsInfo[agentConnID]; ok {
+	if agent, ok := c.AgentInfo[agentConnID]; ok {
 		agent.Mu.Lock()
 		agent.LastHeartbeat = time.Now()
 		agent.Status = protocol.Healthy
@@ -624,20 +852,30 @@ func (c *Controller) updateAgentHeartbeat(agentConnID string) {
 
 func (c *Controller) restartAgent(agent *protocol.AgentInfo) {
 
+	var prevConn *protocol.Connection
+	var ok bool
+	if agent.Process == nil {
+		log["console"].Debug("agent: %v process nil", agent.ID)
+		goto newAgent
+	}
 	//make sure agent process is killed
 	if err := agent.Process.Kill(); err != nil {
-		log["console"].Error("killing agent %v process: %v", agent.ID, err)
-		return
+		log["console"].Warning("killing agent %v process: %v", agent.ID, err)
 	}
 
-	prevConn := c.agentsConn[agent.ID]
-	//defer c.Remove(prevConn, agent.ID, protocol.ConnAgent)
+	prevConn, ok = c.agentsConn[agent.ID]
+	if !ok {
+		log["console"].Debug("agent: %v previous connection nil", agent.ID)
+		goto newAgent
+	}
+
+	delete(c.AgentInfo, prevConn.ID)
 
 	if err := prevConn.Nc.Close(); err != nil {
-		log["console"].Error("close previous agent connection: %v", err)
-		return
+		log["console"].Warning("close previous agent connection: %v", err)
 	}
 
+newAgent:
 	cmd := exec.Command(
 		platform.Executable("agent"),
 		"--port", agent.Port,
@@ -684,7 +922,7 @@ func (c *Controller) createNewLoadBalancer(port string) (*protocol.LBalancerInfo
 	cmd.Stderr = os.Stderr
 
 	if err := cmd.Start(); err != nil {
-		return nil, logger.StrToErrorNew(log, "start loadbalancer process: %v\n", err)
+		return nil, logger.StrToError(log, "start loadbalancer process: %v\n", err)
 	}
 
 	log["console"].Info("Started lb process: %d", cmd.Process.Pid)
@@ -702,7 +940,7 @@ func (c *Controller) createNewLoadBalancer(port string) (*protocol.LBalancerInfo
 	err := c.connectToLB(lb)
 	if err != nil {
 		_ = cmd.Process.Kill()
-		return nil, logger.StrToErrorNew(log, "connect to loadbalancer: %v\n", err)
+		return nil, logger.StrToError(log, "connect to loadbalancer: %v\n", err)
 	}
 
 	log["console"].Debug("Loadbalancer started {ID:%s PID:%d}\n", id, cmd.Process.Pid)
@@ -712,14 +950,14 @@ func (c *Controller) createNewLoadBalancer(port string) (*protocol.LBalancerInfo
 func (c *Controller) connectToLB(lb *protocol.LBalancerInfo) error {
 	address := net.JoinHostPort(lb.Host, lb.Port)
 
-	conn := protocol.TryToConnect(address)
-	if conn == nil {
-		return logger.StrToErrorNew(log, "timeout connecting to loadbalancer\n")
+	conn, err := protocol.TryToConnect(address, 3*time.Second)
+	if err != nil {
+		return logger.StrToError(log, "timeout connecting to loadbalancer: %v", err)
 	}
 
 	conn.Mu.Lock()
 	c.lbConn[lb.ID] = conn
-	c.lbInfo[conn.ID] = lb
+	c.LbInfo[conn.ID] = lb
 	conn.Mu.Unlock()
 
 	//c.Register(conn, protocol.ConnLB, lb.ID)
@@ -735,31 +973,34 @@ func (c *Controller) connectToLB(lb *protocol.LBalancerInfo) error {
 		Content: c.String(),
 	})
 	if err != nil {
-		return logger.StrToErrorNew(log, "Sending handshake to loadbalancer %v", err)
+		return logger.StrToError(log, "Sending handshake to loadbalancer %v", err)
 	} else if handshakeResp.Code != protocol.SUCCESS || handshakeResp.Type != protocol.HELLO || handshakeResp.Content != "LOADBALANCER" {
-		return logger.StrToErrorNew(log, "Response from loadbalancer %v", handshakeResp)
+		return logger.StrToError(log, "Response from loadbalancer %v", handshakeResp)
 	}
 
 	return nil
 }
 
 func (c *Controller) KillAllLoadBalancers() {
-	for _, lb := range c.lbInfo {
+	for _, lb := range c.LbInfo {
 		if lb == nil || lb.Process == nil {
 			continue
 		}
 		lb.Process.Kill()
+
+		conn := c.lbConn[lb.ID]
+		conn.Close()
 	}
 
 	// reset maps
-	c.lbInfo = make(map[string]*protocol.LBalancerInfo)
+	c.LbInfo = make(map[string]*protocol.LBalancerInfo)
 	c.lbConn = make(map[string]*protocol.Connection)
 }
 
 func (c *Controller) updateLBHeartbeat(id string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if lb, ok := c.lbInfo[id]; ok {
+	if lb, ok := c.LbInfo[id]; ok {
 		lb.Mu.Lock()
 		lb.LastHeartbeat = time.Now()
 		lb.Status = protocol.Healthy
@@ -772,21 +1013,32 @@ func (c *Controller) updateLBHeartbeat(id string) {
 }
 
 func (c *Controller) restartLb(lb *protocol.LBalancerInfo) {
-	//make sure lb process is killed
 
-	if err := lb.Process.Kill(); err != nil {
-		log["console"].Error("killing lb %v process: %v", lb.ID, err)
-		return
+	var prevConn *protocol.Connection
+	var ok bool
+	if lb.Process == nil {
+		log["console"].Debug("No lb process during restart")
+		goto newLB
 	}
 
-	prevConn := c.lbConn[lb.ID]
-	//defer c.Remove(prevConn, lb.ID, protocol.ConnLB)
+	//make sure lb process is killed
+	if err := lb.Process.Kill(); err != nil {
+		log["console"].Warning("killing lb %v process: %v", lb.ID, err)
+	}
+
+	prevConn, ok = c.lbConn[lb.ID]
+	if !ok {
+		log["console"].Debug("lb: %v previous connection nil", lb.ID)
+		goto newLB
+	}
+
+	delete(c.LbInfo, prevConn.ID)
 
 	if err := prevConn.Nc.Close(); err != nil {
-		log["console"].Error("close previous lb connection: %v", err)
-		return
+		log["console"].Warning("close previous lb connection: %v", err)
 	}
 
+newLB:
 	cmd := exec.Command(
 		platform.Executable("lb"),
 		"--port", lb.Port,
@@ -827,8 +1079,8 @@ func (c *Controller) createNewService(serviceType protocol.ServiceType) (*protoc
 
 	// Ensure at least one agent exists
 	c.mu.RLock()
-	hasAgent := len(c.agentsInfo) > 0
-	hasLB := len(c.lbInfo) > 0
+	hasAgent := len(c.AgentInfo) > 0
+	hasLB := len(c.LbInfo) > 0
 	c.mu.RUnlock()
 
 	var agent *protocol.AgentInfo = nil
@@ -843,7 +1095,7 @@ func (c *Controller) createNewService(serviceType protocol.ServiceType) (*protoc
 		}
 
 	} else {
-		log["console"].Debug("Message node is present. agent size: %v,  lb size: %v", len(c.agentsInfo), len(c.lbInfo))
+		log["console"].Debug("Message node is present. agent size: %v,  lb size: %v", len(c.AgentInfo), len(c.LbInfo))
 	}
 
 	// TODO: choose agent by load (least busy, etc.)
@@ -853,32 +1105,32 @@ func (c *Controller) createNewService(serviceType protocol.ServiceType) (*protoc
 	 */
 	c.mu.RLock()
 	if hasAgent {
-		for _, a := range c.agentsInfo {
+		for _, a := range c.AgentInfo {
 			if a.Status == protocol.Healthy {
 				agent = a
 				break
 			} else {
-				return nil, nil, logger.StrToErrorNew(log, "Found matching agent but is Unhealthy")
+				return nil, nil, logger.StrToError(log, "Found matching agent but is Unhealthy")
 			}
 		}
 	}
 
 	if hasLB {
-		for _, l := range c.lbInfo {
+		for _, l := range c.LbInfo {
 			if l.Status == protocol.Healthy {
 				lb = l
 				break
 			} else {
-				return nil, nil, logger.StrToErrorNew(log, "Found matching lb but is Unhealthy")
+				return nil, nil, logger.StrToError(log, "Found matching lb but is Unhealthy")
 			}
 		}
 	}
 	c.mu.RUnlock()
 
 	if agent == nil || lb == nil {
-		return nil, nil, logger.StrToErrorNew(log, "one of nodes unavailable, one of them is nil: (agent: %v, lb: %v)\n", agent, lb)
+		return nil, nil, logger.StrToError(log, "one of nodes unavailable, one of them is nil: (agent: %v, lb: %v)\n", agent, lb)
 	} else if agent.Status == protocol.Unhealthy || lb.Status == protocol.Unhealthy {
-		return nil, nil, logger.StrToErrorNew(log, "one of nodes are unhealthy (agent %v, lb: %v)", agent.Status, lb.Status)
+		return nil, nil, logger.StrToError(log, "one of nodes are unhealthy (agent %v, lb: %v)", agent.Status, lb.Status)
 	}
 
 	// mapping agent and lb info to agent conn
@@ -886,25 +1138,25 @@ func (c *Controller) createNewService(serviceType protocol.ServiceType) (*protoc
 	lbConn := c.lbConn[lb.ID]
 
 	if agentConn == nil || lbConn == nil {
-		return nil, nil, logger.StrToErrorNew(log, "One of nodes connection is nil (agent: %v, lb: %v)\n", agentConn, lbConn)
+		return nil, nil, logger.StrToError(log, "One of nodes connection is nil (agent: %v, lb: %v)\n", agentConn, lbConn)
 	}
 
 	// message agent to create service
 	request := protocol.Message{
 		SessionID: agent.ID,
 		Type:      protocol.CREATE,
-		Content:   serviceType,
+		Content:   string(serviceType),
 	}
 
 	response, err := agentConn.SendRequest(request)
 	if err != nil {
-		return nil, nil, logger.StrToErrorNew(log, "send CREATE: %v\n", err)
+		return nil, nil, logger.StrToError(log, "send CREATE: %v\n", err)
 	}
 
 	//update agent health based on successful response
 	c.updateAgentHeartbeat(agentConn.ID)
 
-	ms, err := json.FromJSON[*protocol.MsInfo](response.Content.(string))
+	ms, err := json.FromJSON[*protocol.MsInfo](response.Content)
 	if err != nil {
 		log["console"].Error("Parse ms from response %v", err)
 	}
@@ -918,9 +1170,9 @@ func (c *Controller) createNewService(serviceType protocol.ServiceType) (*protoc
 
 	response, err = lbConn.SendRequest(request)
 	if err != nil {
-		return nil, nil, logger.StrToErrorNew(log, "send ms info to lb: %v\n", err)
+		return nil, nil, logger.StrToError(log, "send ms info to lb: %v\n", err)
 	} else if response.Code != protocol.SUCCESS {
-		return nil, nil, logger.StrToErrorNew(log, "Bad code type %d, message: %s\n", response.Code, response.Content)
+		return nil, nil, logger.StrToError(log, "Bad code type %d, message: %s\n", response.Code, response.Content)
 	}
 
 	//same as with agent
@@ -930,9 +1182,9 @@ func (c *Controller) createNewService(serviceType protocol.ServiceType) (*protoc
 
 	// update nodes with new microservice
 	c.mu.Lock()
-	c.microservices[serviceType] = append(c.microservices[serviceType], ms)
-	c.lbInfo[lbConn.ID].Microservices[serviceType] = append(c.lbInfo[lbConn.ID].Microservices[serviceType], ms)
-	c.agentsInfo[agentConn.ID].Microservices[ms.Type] = append(agent.Microservices[ms.Type], ms)
+	c.Microservices[serviceType] = append(c.Microservices[serviceType], ms)
+	c.LbInfo[lbConn.ID].Microservices[serviceType] = append(c.LbInfo[lbConn.ID].Microservices[serviceType], ms)
+	c.AgentInfo[agentConn.ID].Microservices[ms.Type] = append(agent.Microservices[ms.Type], ms)
 	c.mu.Unlock()
 
 	return ms, lb, nil

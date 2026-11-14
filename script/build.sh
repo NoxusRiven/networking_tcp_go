@@ -2,6 +2,8 @@
 
 set -e
 
+cd ..
+
 mkdir -p bin
 
 go build -o bin/service ./cmd/service

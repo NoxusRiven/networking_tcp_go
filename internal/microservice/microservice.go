@@ -4,7 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"net"
-	crypto "networking/tcp/internal/cryptography"
+	crypto "networking/tcp/internal/crypto"
 	"networking/tcp/internal/logger"
 	"networking/tcp/internal/protocol"
 	"os"
@@ -83,8 +83,6 @@ func (ms *Microservice) handleConnection(nc net.Conn) {
 		return
 	}
 
-	log["console"].Debug("got message %v", msg)
-
 	err = protocol.Send(conn.RW.Writer, protocol.Message{
 		ID:   msg.ID,
 		Type: msg.Type,
@@ -96,7 +94,6 @@ func (ms *Microservice) handleConnection(nc net.Conn) {
 	}
 
 	if msg.Content == "AGENT" {
-		log["console"].Debug("Found agent conn")
 		ms.agentConn = conn
 		go ms.SendHeartBeat(conn)
 	} else {
@@ -136,8 +133,6 @@ func (ms *Microservice) Work(conn *protocol.Connection) {
 		} else {
 			go ms.Service.HandleRequest(request)
 		}
-
-		//message that work has ended
 	}
 }
 

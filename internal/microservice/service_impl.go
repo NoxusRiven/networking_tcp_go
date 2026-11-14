@@ -2,6 +2,7 @@ package microservice
 
 import (
 	"networking/tcp/internal/protocol"
+	"strconv"
 	"time"
 )
 
@@ -54,7 +55,7 @@ func (idle *IdleService) HandleRequest(request protocol.Message) {
 			Type:         request.Type,
 			IsStream:     true,
 			Code:         protocol.SUCCESS,
-			Content:      i,
+			Content:      strconv.Itoa(i),
 		}
 
 		err := protocol.Send(idle.Fields.Parent.LbConn.RW.Writer, response)

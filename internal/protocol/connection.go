@@ -4,7 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"net"
-	crypto "networking/tcp/internal/cryptography"
+	crypto "networking/tcp/internal/crypto"
 	"sync"
 	"time"
 )
@@ -21,6 +21,8 @@ const (
 type Connection struct {
 	ID string
 
+	Reconnecting bool
+
 	Nc net.Conn
 	RW *bufio.ReadWriter
 
@@ -32,10 +34,12 @@ type Connection struct {
 	closeOnce sync.Once
 }
 
+// All connection should try to reconnect unless u have a reason/other handlers regarding this topic
 func NewConnection(nc net.Conn) *Connection {
 	return &Connection{
-		Nc:      nc,
-		pending: make(map[string]chan Message),
+		Reconnecting: true,
+		Nc:           nc,
+		pending:      make(map[string]chan Message),
 		RW: bufio.NewReadWriter(
 			bufio.NewReader(nc),
 			bufio.NewWriter(nc),
@@ -54,14 +58,12 @@ func (c *Connection) ReceiveLoop(node Node) {
 		msg, err := Receive(c.RW.Reader)
 		if err != nil {
 			fmt.Println("[Receive Loop][ERROR]", c.ID, ": ", err)
-			// if !c.tryToReconnect() {
-			// 	return
-			// }
-			// //renew handshake for this connection
-			// node.HandShake(c)
-			// continue
-
-			return
+			if !c.tryToReconnect() {
+				return
+			}
+			//renew handshake for this connection
+			go node.HandShake(c)
+			continue
 		}
 
 		if ch, ok := c.pending[msg.ID]; ok {
@@ -109,10 +111,10 @@ func (c *Connection) SendRequest(msg Message) (Message, error) {
 
 	c.Mu.Lock()
 	c.pending[msg.ID] = ch
-	fmt.Println("[Send Request] started pending on key", msg.ID, "and conn(ID-", c.ID, ", ", c.Nc.LocalAddr(), "->", c.Nc.RemoteAddr(), ")")
+	fmt.Println("[Send Request]: started pending on key", msg.ID, "and conn(ID-", c.ID, ", ", c.Nc.LocalAddr(), "->", c.Nc.RemoteAddr(), ")")
 	c.Mu.Unlock()
 
-	fmt.Println("[Send Request] full message: ", msg)
+	fmt.Println("[Send Request]: full message: ", msg)
 	c.Mu.Lock()
 	Send(c.RW.Writer, msg)
 	c.Mu.Unlock()
@@ -120,7 +122,7 @@ func (c *Connection) SendRequest(msg Message) (Message, error) {
 	select {
 	case resp := <-ch:
 		return resp, nil
-	case <-time.After(5 * time.Second):
+	case <-time.After(15 * time.Second):
 		c.Mu.Lock()
 		delete(c.pending, msg.ID)
 		c.Mu.Unlock()
@@ -138,10 +140,10 @@ func (c *Connection) SendRequestChan(msg Message) (<-chan Message, error) {
 
 	c.Mu.Lock()
 	c.pending[msg.ID] = ch
-	fmt.Println("[Send Request Chan] started pending on key", msg.ID, "and conn(ID-", c.ID, ", ", c.Nc.LocalAddr(), "->", c.Nc.RemoteAddr(), ")")
+	fmt.Println("[Send Request Chan]: started pending on key", msg.ID, "and conn(ID-", c.ID, ", ", c.Nc.LocalAddr(), "->", c.Nc.RemoteAddr(), ")")
 	c.Mu.Unlock()
 
-	fmt.Println("[Send Request Chan] full message: ", msg)
+	fmt.Println("[Send Request Chan]: full message: ", msg)
 	c.Mu.Lock()
 	err := Send(c.RW.Writer, msg)
 	c.Mu.Unlock()
@@ -160,13 +162,14 @@ func (c *Connection) ReceiveLoopChan(node Node) {
 	for {
 		msg, err := Receive(c.RW.Reader)
 		if err != nil {
-			fmt.Println("[Receive Loop Chan][ERROR]", c.ID, ": ", err)
+			fmt.Println("[Receive Loop Chan][ERROR]:", c.ID, ": ", err)
 			if !c.tryToReconnect() {
+				c.Close()
 				return
 			}
 
 			//renew handshake for this connection
-			node.HandShake(c)
+			go node.HandShake(c)
 			continue
 		}
 
@@ -193,10 +196,16 @@ func (c *Connection) ReceiveLoopChan(node Node) {
 }
 
 func (c *Connection) tryToReconnect() bool {
+
+	if !c.Reconnecting {
+		return false
+	}
+
 	addr := c.Nc.RemoteAddr().String()
 
-	conn := TryToConnect(addr)
-	if conn == nil {
+	conn, err := TryToConnect(addr, 10*time.Second)
+	if err != nil {
+		fmt.Println(err)
 		return false
 	}
 	_ = c.Nc.Close()
@@ -204,11 +213,14 @@ func (c *Connection) tryToReconnect() bool {
 	c.Nc = conn.Nc
 	c.RW = conn.RW
 
+	fmt.Println("[tryToReconnect]: Restored ID:", c.ID)
+
 	return true
 }
 
-func TryToConnect(addr string) *Connection {
-	deadline := time.Now().Add(10 * time.Second)
+// Duration can be passed as pure int, but will be represented in nanoseconds, be explicit about duration time
+func TryToConnect(addr string, deadlineDur time.Duration) (*Connection, error) {
+	deadline := time.Now().Add(deadlineDur)
 
 	for time.Now().Before(deadline) {
 		nc, err := net.DialTimeout(
@@ -221,16 +233,16 @@ func TryToConnect(addr string) *Connection {
 			conn := NewConnection(nc)
 			conn.ID = crypto.GenerateID(crypto.CONN)
 
-			fmt.Println("Connection succeded! ID:", conn.ID)
+			fmt.Printf("[TryToConnect]: Connection succeded! To:%v with ID:%v\n", nc.RemoteAddr().String(), conn.ID)
 
-			return conn
+			return conn, nil
 		}
 
 		fmt.Println("Connection failed:", err, "- Retring!")
 		time.Sleep(400 * time.Millisecond)
 	}
 
-	fmt.Println("Connection failed")
+	fmt.Println()
 
-	return nil
+	return nil, fmt.Errorf("[TryToConnect]: Connection failed %v", addr)
 }
