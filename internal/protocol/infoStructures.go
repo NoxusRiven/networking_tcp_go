@@ -34,9 +34,11 @@ type AgentInfo struct {
 
 	Microservices map[ServiceType][]*MsInfo
 
-	Process *os.Process
+	Process *os.Process `json:"-"`
 
-	Mu sync.RWMutex // protects mutable fields
+	Mu sync.RWMutex `json:"-"` // protects mutable fields
+
+	MsCurrPort string
 }
 
 type MsInfo struct {

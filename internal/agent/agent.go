@@ -10,6 +10,7 @@ import (
 	"networking/tcp/internal/protocol"
 	"os"
 	"os/exec"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -57,7 +58,7 @@ func NewAgent(lisPort string, nodeID string) (*Agent, error) {
 		listener:      listen,
 		msInfo:        make(map[string]*protocol.MsInfo),
 		msConn:        make(map[string]*protocol.Connection),
-		nextPortCount: 0,
+		nextPortCount: BASE_PORT_MS,
 	}, nil
 
 }
@@ -137,7 +138,7 @@ func (a *Agent) GetNextPort() string {
 	num := a.nextPortCount
 	a.nextPortCount++
 
-	return fmt.Sprintf("%d", BASE_PORT_MS+num)
+	return fmt.Sprintf("%d", num)
 }
 
 func (a *Agent) createMicroservice(host string, port string, ms_type string) (*protocol.MsInfo, error) {
@@ -262,10 +263,16 @@ func (a *Agent) handleCreate(request protocol.Message) protocol.Message {
 }
 
 func (a *Agent) handleRecover(request protocol.Message) protocol.Message {
-	var services map[protocol.ServiceType][]*protocol.MsInfo
+	//var services map[protocol.ServiceType][]*protocol.MsInfo
 
 	log["console"].Debug("ms string: %v", request.Content)
-	err := json.DecodeContent(request.Content, &services)
+	//err := json.DecodeContent(request.Content, &services)
+	type Data struct {
+		Services map[protocol.ServiceType][]*protocol.MsInfo `json:"services"`
+		Port     string                                      `json:"port"`
+	}
+
+	agentRecover, err := json.FromJSON[Data](request.Content)
 	if err != nil {
 		return protocol.Message{
 			ID:      request.ID,
@@ -275,6 +282,21 @@ func (a *Agent) handleRecover(request protocol.Message) protocol.Message {
 		}
 	}
 
+	uintConv, err := strconv.ParseUint(agentRecover.Port, 10, 16)
+	if err != nil {
+		log["console"].Error("Convert strint to uint16")
+		return protocol.Message{
+			ID:      request.ID,
+			Type:    request.Type,
+			Code:    protocol.ERROR,
+			Content: err.Error(),
+		}
+	}
+
+	//controller gives current gotta +1
+	a.nextPortCount = uint16(uintConv) + 1
+
+	services := agentRecover.Services
 	//gather ms that failed to connect
 	var errList []string
 

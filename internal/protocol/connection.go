@@ -116,13 +116,21 @@ func (c *Connection) SendRequest(msg Message) (Message, error) {
 
 	fmt.Println("[Send Request]: full message: ", msg)
 	c.Mu.Lock()
-	Send(c.RW.Writer, msg)
+	err := Send(c.RW.Writer, msg)
 	c.Mu.Unlock()
+
+	if err != nil {
+		c.Mu.Lock()
+		delete(c.pending, msg.ID)
+		close(ch)
+		c.Mu.Unlock()
+		return Message{}, err
+	}
 
 	select {
 	case resp := <-ch:
 		return resp, nil
-	case <-time.After(15 * time.Second):
+	case <-time.After(7 * time.Second):
 		c.Mu.Lock()
 		delete(c.pending, msg.ID)
 		c.Mu.Unlock()
@@ -195,6 +203,35 @@ func (c *Connection) ReceiveLoopChan(node Node) {
 	}
 }
 
+// TODO: for now this only works for chan but refactor and combine chan and normal send/receive in one, and make it private, this should be public api
+func (c *Connection) SendAndHandle(msg Message, handler func(Message) error) error {
+	respChan, err := c.SendRequestChan(msg)
+	if err != nil {
+		return fmt.Errorf("[ERROR]: Problem accured when SendRequestChan returned channel: %v\n", err)
+	}
+
+	n := time.Duration(7 * time.Second)
+
+	for respChan != nil {
+		select {
+		case resp, ok := <-respChan:
+			if !ok {
+				respChan = nil
+				continue
+			}
+
+			err := handler(resp)
+			if err != nil {
+				return fmt.Errorf("[ERROR]: Handler failed: %v\n", err)
+			}
+		case <-time.After(n):
+			return fmt.Errorf("[ERROR]: timeout after %vsec", n.Seconds())
+		}
+	}
+
+	return nil
+}
+
 func (c *Connection) tryToReconnect() bool {
 
 	if !c.Reconnecting {
@@ -203,7 +240,7 @@ func (c *Connection) tryToReconnect() bool {
 
 	addr := c.Nc.RemoteAddr().String()
 
-	conn, err := TryToConnect(addr, 10*time.Second)
+	conn, err := TryToConnect(addr, 5*time.Second)
 	if err != nil {
 		fmt.Println(err)
 		return false

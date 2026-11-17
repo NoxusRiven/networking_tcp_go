@@ -214,41 +214,12 @@ func (api *APIGateway) handleConnectionToLB(lb *protocol.LBalancerInfo) {
 
 func (api *APIGateway) syncLoadBalancers(msg protocol.Message) error {
 
-	//TODO: change this to new json api
-	// bytes, err := json.Marshal(msg.Content)
-	// if err != nil {
-	// 	return logger.StrToError(log, "Unable to marshal loadbalancer info, error: %v", err)
-	// }
-
-	// err = json.Unmarshal(bytes, &lbList)
-	// if err != nil {
-	// 	return logger.StrToError(log, "Unable to decode loadbalancers from controllers message, error: %v", err)
-	// }
-
 	lbList, err := json.FromJSON[[]*protocol.LBalancerInfo](msg.Content)
 	if err != nil {
 		return logger.StrToError(log, "Requested message: %v, error generated: %v", msg, err)
 	}
 
 	log["console"].Debug("Converted json into lb list")
-	// hasLB := len(api.lbInfo) > 0
-	// var skip []bool
-	// for i, lb := range lbList {
-	// 	log["console"].Debug("LB: %s:%s, ID: %s", lb.Host, lb.Port, lb.ID)
-	// 	if hasLB {
-	// 		for _, l := range api.lbInfo {
-	// 			if l.ID == lb.ID {
-	// 				skip[i] = true
-	// 			}
-	// 		}
-	// 	}
-	// }
-
-	// for i, lb := range lbList {
-	// 	if !skip[i] {
-	// 		api.handleConnectionToLB(lb)
-	// 	}
-	// }
 
 	existingByID := make(map[string]*protocol.LBalancerInfo)
 	for _, l := range api.lbInfo {
@@ -258,13 +229,12 @@ func (api *APIGateway) syncLoadBalancers(msg protocol.Message) error {
 	hasLB := len(existingByID) > 0
 	skip := make([]bool, len(lbList))
 
-	// 2. Iterujemy po nowej liście i sprawdzamy O(1) dla każdego elementu
 	for i, lb := range lbList {
 		log["console"].Debug("LB: %s:%s, ID: %s", lb.Host, lb.Port, lb.ID)
 
 		if hasLB {
 			if existingLB, exists := existingByID[lb.ID]; exists {
-				//change more fields
+				//change fields
 				existingLB.ID = lb.ID
 				existingLB.NodeID = lb.NodeID
 				existingLB.Host = lb.Host
@@ -290,7 +260,6 @@ func (api *APIGateway) syncLoadBalancers(msg protocol.Message) error {
 func (api *APIGateway) messageWorker(conn *protocol.Connection) {
 	lb := api.lbInfo[conn.ID]
 
-	//var err error
 	for msgEx := range api.requestChannelMap[lb.ID] {
 		_, ok := api.lbInfo[conn.ID]
 		if !ok {
@@ -301,21 +270,31 @@ func (api *APIGateway) messageWorker(conn *protocol.Connection) {
 		req := msgEx.request
 		log["console"].Debug("Message worker got request: %v", req)
 
-		respChan, err := conn.SendRequestChan(req)
-
-		if err != nil {
-			log["console"].Error("Error receiving message channel from loadbalancer on connID %s, error: %v", conn.ID, err)
-			return
-		}
-
-		go func(msgEx *MessageExchange, respChan <-chan protocol.Message) {
-			for resp := range respChan {
+		go func(msgEx *MessageExchange) {
+			err := conn.SendAndHandle(req, func(resp protocol.Message) error {
 				log["console"].Debug("Message worker forwarding response: %v", resp)
-
 				msgEx.response <- resp
+
+				return nil
+			})
+			if err != nil {
+				log["console"].Error("Error receiving message channel from loadbalancer on connID %s, error: %v", conn.ID, err)
+
+				conn.Close()
+				resp := protocol.Message{
+					ID:      req.ID,
+					Type:    req.Type,
+					Code:    protocol.ERROR,
+					Content: "Unable to connect to server, try again in a second",
+				}
+				msgEx.response <- resp
+
+				return
 			}
-		}(msgEx, respChan)
+		}(msgEx)
 	}
+
+	//protocol.TryToConnect()
 }
 
 func (api *APIGateway) handleClient(cliConn *protocol.Connection) {
@@ -350,7 +329,7 @@ func (api *APIGateway) handleClient(cliConn *protocol.Connection) {
 		for response := range reqPool.response {
 			response.ID = request.ID
 
-			log["console"].Debug("trying to send response to client %v", response)
+			//log["console"].Debug("trying to send response to client %v", response)
 
 			cliConn.Mu.Lock()
 			err = protocol.Send(cliConn.RW.Writer, response)
@@ -392,6 +371,10 @@ func (api *APIGateway) findLbForRequest(request protocol.Message) *protocol.LBal
 		})
 		resp := <-respChan
 
+		if resp.Content == "null" {
+			log["console"].Error("Empty lb list: %v", resp)
+		}
+
 		log["console"].Debug("Response from controller after asking to create new lb for request: %v", resp)
 
 		if err != nil {
@@ -405,17 +388,6 @@ func (api *APIGateway) findLbForRequest(request protocol.Message) *protocol.LBal
 			return nil
 		}
 
-		// bytes, err := json.Marshal(resp.Content)
-		// if err != nil {
-		// 	log["console"].Error("Unable to marshal loadbalancer info from controller response, error: %v", err)
-		// 	return nil
-		// }
-
-		// err = json.Unmarshal(bytes, &lbUpdate)
-		// if err != nil {
-		// 	log["console"].Error("Unable to decode loadbalancers from controller response, error: %v", err)
-		// 	return nil
-		// }
 		lbUpdate, err := json.FromJSON[*protocol.LBalancerInfo](resp.Content)
 		if err != nil {
 			log["console"].Error("Unable to covert from json to lb: %v", err)
@@ -424,16 +396,6 @@ func (api *APIGateway) findLbForRequest(request protocol.Message) *protocol.LBal
 
 		//if no lb conns are present connect to new found lb
 		if len(api.lbConn) == 0 || len(api.lbInfo) == 0 {
-			// for i := 0; i < CONNECTION_NUM; i++ {
-			// 	conn, err := protocol.TryToConnect(net.JoinHostPort(lbUpdate.Host, lbUpdate.Port))
-			// 	if err != nil {
-			// 		log["console"].Warning("findLbRequest connecting to lb: %v", err)
-			// 		continue
-			// 	}
-
-			// 	api.lbInfo[conn.ID] = lbUpdate
-			// 	api.lbConn[lbUpdate.ID] = append(api.lbConn[lbUpdate.ID], conn)
-			// }
 			api.handleConnectionToLB(lbUpdate)
 		}
 

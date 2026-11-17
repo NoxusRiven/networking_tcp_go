@@ -240,6 +240,7 @@ func (c *Controller) AsyncEvent(msg protocol.Message, conn *protocol.Connection)
 		response = c.handleCreate(msg)
 	case protocol.RECOVER:
 		lb := c.LbInfo[conn.ID]
+		log["console"].Debug("lb in async event recover: %v", lb)
 		msJson, err := json.ToJSON(lb.Microservices)
 		if err != nil {
 			panic(err)
@@ -410,7 +411,17 @@ func (c *Controller) recoverConnections(conn *protocol.Connection) error {
 
 	if agent, ok := c.AgentInfo[conn.ID]; ok {
 
-		recoverMsg.Content, err = json.EncodeContentStr(agent.Microservices)
+		type Data struct {
+			Services map[protocol.ServiceType][]*protocol.MsInfo `json:"services"`
+			Port     string                                      `json:"port"`
+		}
+
+		data := Data{
+			Services: agent.Microservices,
+			Port:     agent.MsCurrPort,
+		}
+
+		recoverMsg.Content, err = json.ToJSON(data)
 		if err != nil {
 			return logger.StrToError(log, "Encoding content: %v", err)
 		}
@@ -504,6 +515,11 @@ func (c *Controller) recoverStateFromFile() (bool, error) {
 	lbInfo := prevState.LbInfo
 	agentInfo := prevState.AgentInfo
 
+	// for _, lb := range lbInfo {
+	// 	log["console"].Debug("lbInfo %v\n", lb)
+	// }
+	// syscall.Exit(1)
+
 	c.LbInfo = make(map[string]*protocol.LBalancerInfo)
 	c.lbConn = make(map[string]*protocol.Connection)
 
@@ -518,11 +534,10 @@ func (c *Controller) recoverStateFromFile() (bool, error) {
 		return false, err
 	}
 
-	//TODO: maybe later add waitgroup to wait for rutines to finish, but take api in equation
 	var wg sync.WaitGroup
+
 	//recover state from data
 	//this will create new maps
-
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -1160,6 +1175,9 @@ func (c *Controller) createNewService(serviceType protocol.ServiceType) (*protoc
 	if err != nil {
 		log["console"].Error("Parse ms from response %v", err)
 	}
+
+	//update agents curr ms port
+	agent.MsCurrPort = ms.Port
 
 	//inform load balancer about newly created service
 	request = protocol.Message{

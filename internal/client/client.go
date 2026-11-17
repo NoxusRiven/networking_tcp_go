@@ -10,13 +10,15 @@ import (
 	"time"
 )
 
-// -------------------- STRUCTURES -----------------------
+// ####################### STRUCTURES ##########################
 type CLI struct {
 	conn      *protocol.Connection
 	isRunning bool
 }
 
-// -------------------- FUNCTIONS -----------------------
+// ####################### STRUCTURES ##########################
+
+// ################################ FUNCTIONS ################################
 func NewCLI() *CLI {
 	return &CLI{
 		isRunning: false,
@@ -82,24 +84,32 @@ func readUserInput(prompt string) string {
 	return strings.TrimSpace(text)
 }
 
+// ################################ FUNCTIONS ################################
+
 // ################################ MESSAGE HANDLERS ################################
 func (c *CLI) HandlePing() {
 	msg := protocol.Message{
 		Type: "PING",
 	}
 
-	respChan, err := c.conn.SendRequestChan(msg)
-	if err != nil {
-		fmt.Println("[ERROR]: Error while seding message to API", err)
+	// respChan, err := c.conn.SendRequestChan(msg)
+	// if err != nil {
+	// 	return
+	// }
 
+	// resp := <-respChan
+
+	if err := c.conn.SendAndHandle(msg, func(resp protocol.Message) error {
+		fmt.Println("[DEBUG]: Server Full Response:", resp)
+
+		fmt.Println("[SERVER]:", resp.Content)
+
+		return nil
+	}); err != nil {
+		fmt.Println("Error SendAndHandle:", err)
 		return
 	}
 
-	resp := <-respChan
-
-	fmt.Println("[DEBUG]: Server Full Response:", resp)
-
-	fmt.Println("[SERVER]:", resp.Content)
 }
 
 func (c *CLI) HandleIdle() {
@@ -109,12 +119,10 @@ func (c *CLI) HandleIdle() {
 
 	respChan, err := c.conn.SendRequestChan(msg)
 	if err != nil {
-		fmt.Println("[ERROR]: Problem accured when SendRequestNew returned channel:", err)
-
+		fmt.Println("[ERROR]: Problem accured when SendRequestChan returned channel:", err)
 	}
 
 	for resp := range respChan {
-		//resp := c.conn.ReceiveRequestNew(msg)
 		fmt.Println("[HandleIdle]: response from API: ", resp)
 	}
 
