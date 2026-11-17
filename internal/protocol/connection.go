@@ -240,7 +240,7 @@ func (c *Connection) tryToReconnect() bool {
 
 	addr := c.Nc.RemoteAddr().String()
 
-	conn, err := TryToConnect(addr, 5*time.Second)
+	conn, err := TryToConnect(addr, 7*time.Second)
 	if err != nil {
 		fmt.Println(err)
 		return false

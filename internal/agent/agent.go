@@ -79,6 +79,7 @@ func (a *Agent) Start() {
 }
 
 func (a *Agent) handleConnection(nc net.Conn) {
+	defer a.KillAllMS()
 	conn := protocol.NewConnection(nc)
 	defer conn.Close()
 

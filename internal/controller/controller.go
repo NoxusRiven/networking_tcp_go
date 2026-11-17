@@ -239,6 +239,8 @@ func (c *Controller) AsyncEvent(msg protocol.Message, conn *protocol.Connection)
 	case protocol.CREATE:
 		response = c.handleCreate(msg)
 	case protocol.RECOVER:
+		//c.LbInfo
+		log["console"].Debug("lbInfo in async event recover: %v", c.LbInfo)
 		lb := c.LbInfo[conn.ID]
 		log["console"].Debug("lb in async event recover: %v", lb)
 		msJson, err := json.ToJSON(lb.Microservices)

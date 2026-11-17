@@ -285,7 +285,7 @@ func (api *APIGateway) messageWorker(conn *protocol.Connection) {
 					ID:      req.ID,
 					Type:    req.Type,
 					Code:    protocol.ERROR,
-					Content: "Unable to connect to server, try again in a second",
+					Content: "Unable to connect to server",
 				}
 				msgEx.response <- resp
 
