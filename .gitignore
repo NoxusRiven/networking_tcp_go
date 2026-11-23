@@ -1,9 +1,12 @@
 *.exe
 *.txt
 
+system.config.json
+controller.cache.json
+
 /bin/
 
 /cmd/test/
 
-system.config.json
-controller.cache.json
+/cmd/api/*.pem
+/cmd/client/*.pem

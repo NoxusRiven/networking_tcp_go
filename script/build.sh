@@ -4,6 +4,7 @@ set -e
 
 cd ..
 
+if ! test -d bin; then echo "Creating bin folder"; fi
 mkdir -p bin
 
 go build -o bin/service ./cmd/service

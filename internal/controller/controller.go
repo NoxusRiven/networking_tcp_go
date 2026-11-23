@@ -137,7 +137,7 @@ func (c *Controller) run() error {
 
 	go c.acceptConnection()
 
-	go c.cacheStateToFile()
+	//go c.cacheStateToFile()
 
 	return nil
 }

@@ -2,6 +2,11 @@ package api
 
 import (
 	"bufio"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/base64"
+	"encoding/pem"
 	"fmt"
 	"net"
 	crypto "networking/tcp/internal/crypto"
@@ -47,6 +52,9 @@ type APIGateway struct {
 	lbConn map[string][]*protocol.Connection
 
 	requestChannelMap map[string]chan *MessageExchange
+
+	privKey *rsa.PrivateKey
+	aesKey  []byte
 }
 
 // ##################################### STRUCTURES #####################################
@@ -68,7 +76,95 @@ func NewAPIGateway(port string) (*APIGateway, error) {
 	}, nil
 }
 
+func (api *APIGateway) genereateKeyFiles() {
+	privKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		panic(err)
+	}
+
+	privateBytes, err := x509.MarshalPKCS8PrivateKey(privKey)
+	if err != nil {
+		panic(err)
+	}
+
+	privatePEM := pem.EncodeToMemory(&pem.Block{
+		Type:  "PRIVATE KEY",
+		Bytes: privateBytes,
+	})
+
+	err = os.WriteFile("private.pem", privatePEM, 0600)
+	if err != nil {
+		panic(err)
+	}
+
+	publicBytes, err := x509.MarshalPKIXPublicKey(&privKey.PublicKey)
+	if err != nil {
+		panic(err)
+	}
+
+	publicPEM := pem.EncodeToMemory(&pem.Block{
+		Type:  "PUBLIC KEY",
+		Bytes: publicBytes,
+	})
+
+	err = os.WriteFile("public.pem", publicPEM, 0644)
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println("RSA keys successfully generated!")
+
+	if !api.findKeyFiles() {
+		panic("Keys not found after generating them!")
+	}
+}
+
+func (api *APIGateway) findKeyFiles() bool {
+	privateData, err := os.ReadFile("private.pem")
+	if err != nil {
+		log["console"].Warning("Couldn't read private key file: %v", err)
+		return false
+	}
+
+	privateBlock, _ := pem.Decode(privateData)
+	if privateBlock == nil {
+		log["console"].Error("Couldn't decode private key data: %v", err)
+		return false
+	}
+
+	privateParsed, err := x509.ParsePKCS8PrivateKey(privateBlock.Bytes)
+	if err != nil {
+		log["console"].Error("Couldn't parse private key data: %v", err)
+		return false
+	}
+
+	privKey, ok := privateParsed.(*rsa.PrivateKey)
+	if !ok {
+		log["console"].Error("Couldn't convert private key data to private key structure - Private key is not RSA")
+		return false
+	}
+
+	api.privKey = privKey
+
+	//public key will be derived from private, but public key file must exist
+	_, err = os.ReadFile("public.pem")
+	if err != nil {
+		log["console"].Error("Couldn't read public key file: %v", err)
+		return false
+	}
+
+	fmt.Println("Keys successfully loaded!")
+
+	return true
+}
+
 func (api *APIGateway) Start(controllerAddr string) error {
+
+	foundKeys := api.findKeyFiles()
+	if !foundKeys {
+		api.genereateKeyFiles()
+	}
+
 	api.controllerRequestChannel = make(chan *MessageExchange)
 
 	api.requestChannelMap = make(map[string]chan *MessageExchange)
@@ -271,6 +367,7 @@ func (api *APIGateway) messageWorker(conn *protocol.Connection) {
 		log["console"].Debug("Message worker got request: %v", req)
 
 		go func(msgEx *MessageExchange) {
+
 			err := conn.SendAndHandle(req, func(resp protocol.Message) error {
 				log["console"].Debug("Message worker forwarding response: %v", resp)
 				msgEx.response <- resp
@@ -297,22 +394,111 @@ func (api *APIGateway) messageWorker(conn *protocol.Connection) {
 	//protocol.TryToConnect()
 }
 
+func (api *APIGateway) handleCliHandshake(conn *protocol.Connection) protocol.Message {
+	var resp protocol.Message
+
+	var clientPubKey *rsa.PublicKey
+	var aesKey []byte
+	var encKey string
+
+	msg, err := protocol.Receive(conn.RW.Reader)
+	if err != nil {
+		log["console"].Error("Error while reading handshake from client: %v", err)
+		resp = protocol.Message{
+			ID:   msg.ID,
+			Type: protocol.HELLO,
+			Code: protocol.ERROR,
+		}
+		goto send
+	}
+
+	clientPubKey, err = crypto.ParsePublicKeyBase64(msg.Keys.CliPubKey)
+	if err != nil {
+		log["console"].Error("api: invalid client public key: %v", err)
+		resp = protocol.Message{
+			ID:   msg.ID,
+			Type: protocol.HELLO,
+			Code: protocol.ERROR,
+		}
+		goto send
+	}
+
+	aesKey, err = crypto.GenerateAESKey()
+	if err != nil {
+		log["console"].Error("api: couldn't generate aes key: %v", err)
+		resp = protocol.Message{
+			ID:   msg.ID,
+			Type: protocol.HELLO,
+			Code: protocol.ERROR,
+		}
+		goto send
+	}
+
+	api.aesKey = aesKey
+
+	encKey, err = crypto.EncryptSessionKey(clientPubKey, aesKey)
+	if err != nil {
+		log["console"].Error("api: encrypt handshake ack: %v", err)
+		resp = protocol.Message{
+			ID:   msg.ID,
+			Type: protocol.HELLO,
+			Code: protocol.ERROR,
+		}
+		goto send
+	}
+
+	resp = protocol.Message{
+		ID:   msg.ID,
+		Type: protocol.HELLO,
+		Code: protocol.SUCCESS,
+		Keys: crypto.KeyPayload{
+			AesKey: encKey,
+		},
+	}
+
+send:
+	if err := protocol.Send(conn.RW.Writer, resp); err != nil {
+		log["console"].Error("api: failed to send handshake response: %v", err)
+	}
+
+	return resp
+}
+
 func (api *APIGateway) handleClient(cliConn *protocol.Connection) {
 	defer cliConn.Close()
 
+	resp := api.handleCliHandshake(cliConn)
+	if resp.Code != protocol.SUCCESS {
+		return
+	}
+
+	log["console"].Info("Succesfull handshake with client - messages will be encrypted, aes: %v", api.aesKey)
+
 	for {
-		request, err := protocol.Receive(cliConn.RW.Reader)
+		cliRequest, err := protocol.Receive(cliConn.RW.Reader)
 		if err != nil {
 			log["console"].Error("Error while reading request from client: %v", err)
 			return
 		}
 
-		log["console"].Debug("Received request from client: %v", request)
+		log["console"].Debug("Received request from client: %v", cliRequest)
 
-		if request.Type == "EXIT" {
+		if cliRequest.Type == "EXIT" {
 			log["console"].Info("Client disconnected")
 			return
 		}
+
+		reqDecrypted, err := crypto.DecryptAES(cliRequest.Content, api.aesKey)
+		if err != nil {
+			log["console"].Error("Error while trying to decrypt request request from client: %v", err)
+			return
+		}
+
+		log["console"].Debug("Decrypted cli message %v", cliRequest.Content)
+
+		request := cliRequest
+		request.Content = reqDecrypted
+		request.Keys = crypto.KeyPayload{}
 
 		reqPool := &MessageExchange{
 			request:  request,
@@ -326,13 +512,20 @@ func (api *APIGateway) handleClient(cliConn *protocol.Connection) {
 
 		api.requestChannelMap[lb.ID] <- reqPool
 
+		var responseCli protocol.Message
 		for response := range reqPool.response {
 			response.ID = request.ID
 
 			//log["console"].Debug("trying to send response to client %v", response)
+			encDataBytes, err := crypto.EncryptAES(response.Content, api.aesKey)
+
+			encData := base64.StdEncoding.EncodeToString(encDataBytes)
+
+			responseCli = response
+			responseCli.Content = encData
 
 			cliConn.Mu.Lock()
-			err = protocol.Send(cliConn.RW.Writer, response)
+			err = protocol.Send(cliConn.RW.Writer, responseCli)
 			cliConn.Mu.Unlock()
 
 			if err != nil {
@@ -340,12 +533,32 @@ func (api *APIGateway) handleClient(cliConn *protocol.Connection) {
 				return
 			}
 
-			log["console"].Debug("Sent response to client: %v", response)
+			log["console"].Debug("Sent response to client: %v", responseCli)
 
 			if !response.IsStream {
 				close(reqPool.response)
 			}
 		}
+
+		// //! temporary delete later
+		// code := protocol.SUCCESS
+
+		// if err != nil {
+		// 	data = err.Error()
+		// 	code = protocol.ERROR
+		// }
+
+		// response := protocol.Message{
+		// 	ID:      cliRequest.ID,
+		// 	Type:    cliRequest.Type,
+		// 	Code:    code,
+		// 	Content: data,
+		// }
+		// err = protocol.Send(cliConn.RW.Writer, response)
+		// if err != nil {
+		// 	log["console"].Error("Error while sending response to client: %v", err)
+		// 	return
+		// }
 	}
 
 }
