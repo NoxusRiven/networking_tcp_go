@@ -1,5 +1,7 @@
 package protocol
 
+import "time"
+
 //TODO: lil rework should be done to this idea
 //! old interface
 
@@ -10,14 +12,21 @@ type Node interface {
 	String() string
 }
 
-//idea behind is that some nodes like CLI are pure nodes without Worker or Manager methods, and some only Work and doesnt Manage
-//? new api still in progress
 type NodeBase struct {
-	ID string
+	ID     string
+	NodeID string
 
 	Host string
 	Port string
+
+	LastHeartbeat time.Time
+	Status        NodeStatus
+
+	CurrentLoad uint16
 }
+
+//idea behind is that some nodes like CLI are pure nodes without Worker or Manager methods, and some only Work and doesnt Manage
+//? new api still in progress
 
 type WorkerNode interface {
 	AsyncEvent(Message, *Connection)
