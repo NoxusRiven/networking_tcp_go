@@ -29,8 +29,6 @@ func main() {
 	sig := <-sigChan
 	fmt.Println("Received signal:", sig)
 
-	agent.KillAllMS()
-
 	fmt.Println("Agent shutdown complete")
 	os.Exit(1)
 

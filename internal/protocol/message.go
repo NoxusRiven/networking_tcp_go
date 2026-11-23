@@ -3,6 +3,7 @@ package protocol
 import (
 	"bufio"
 	"encoding/json"
+	"networking/tcp/internal/crypto"
 	//"fmt"
 	//"strings"
 )
@@ -56,6 +57,8 @@ type Message struct {
 	IsStream     bool        `json:"isStream,omitempty"`
 	Code         CodeType    `json:"code,omitempty"`
 	Content      string      `json:"content,omitempty"`
+
+	Keys crypto.KeyPayload `json:"keys,omitempty"`
 }
 
 func Send(writer *bufio.Writer, msg Message) error {
