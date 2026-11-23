@@ -3,7 +3,6 @@ package protocol
 import (
 	"os"
 	"sync"
-	"time"
 )
 
 type NodeStatus int
@@ -18,19 +17,17 @@ type ServiceType string
 
 const (
 	PingService     ServiceType = "PING"
+	IdleService     ServiceType = "IDLE_WORK"
 	UploadService   ServiceType = "FILE_UPLOAD"
 	DownloadService ServiceType = "FILE_DOWNLOAD"
 )
 
+const (
+	MAX_NODE_LOAD = 5
+)
+
 type AgentInfo struct {
-	ID     string
-	NodeID string
-
-	Host string
-	Port string
-
-	LastHeartbeat time.Time
-	Status        NodeStatus
+	Base NodeBase
 
 	Microservices map[ServiceType][]*MsInfo
 
@@ -42,34 +39,18 @@ type AgentInfo struct {
 }
 
 type MsInfo struct {
-	ID     string
-	NodeID string
+	Base NodeBase
 
-	PID int
-
-	Host string
-	Port string
-
-	//TODO: later make this a serviceType not string
 	Type ServiceType
 
-	LastHeartbeat time.Time
-	Status        NodeStatus
-
+	PID     int
 	Process *os.Process `json:"-"`
 
 	Mu sync.RWMutex `json:"-"` // protects mutable fields
 }
 
 type LBalancerInfo struct {
-	ID     string
-	NodeID string
-
-	Host string
-	Port string
-
-	LastHeartbeat time.Time
-	Status        NodeStatus
+	Base NodeBase
 
 	Microservices map[ServiceType][]*MsInfo
 

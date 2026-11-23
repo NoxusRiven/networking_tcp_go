@@ -54,7 +54,6 @@ type APIGateway struct {
 	requestChannelMap map[string]chan *MessageExchange
 
 	privKey *rsa.PrivateKey
-	aesKey  []byte
 }
 
 // ##################################### STRUCTURES #####################################
@@ -236,20 +235,20 @@ func (api *APIGateway) RegisterToController(conn *protocol.Connection) error {
 func (api *APIGateway) handleConnectionToLB(lb *protocol.LBalancerInfo) {
 
 	//if connections exists, dont create new MsgExchnge and delete previous data
-	conns, okConn := api.lbConn[lb.ID]
+	conns, okConn := api.lbConn[lb.Base.ID]
 	var conn *protocol.Connection
 	if !okConn {
 		log["console"].Debug("creating new MsgExchnge")
-		api.requestChannelMap[lb.ID] = make(chan *MessageExchange, CONNECTION_NUM)
+		api.requestChannelMap[lb.Base.ID] = make(chan *MessageExchange, CONNECTION_NUM)
 	}
 
 	// for every loadbalancer start CONNECTION_NUM of connections
 	for i := 0; i < CONNECTION_NUM; i++ {
 
 		//? Need 'raw' net.Dial, maybe can use TryConnect - look it up
-		nc, err := net.DialTimeout("tcp", net.JoinHostPort(lb.Host, lb.Port), 3*time.Second)
+		nc, err := net.DialTimeout("tcp", net.JoinHostPort(lb.Base.Host, lb.Base.Port), 3*time.Second)
 		if err != nil {
-			log["console"].Error("Error connecting to loadbalancer %s:%s, error: %v", lb.Host, lb.Port, err)
+			log["console"].Error("Error connecting to loadbalancer %s:%s, error: %v", lb.Base.Host, lb.Base.Port, err)
 			continue
 		}
 
@@ -292,16 +291,16 @@ func (api *APIGateway) handleConnectionToLB(lb *protocol.LBalancerInfo) {
 		}
 
 		if resp.Code != protocol.SUCCESS {
-			log["console"].Warning("Loadbalancer %s:%s responsed with error code %d to heartbeat on %s connID, response: %v", lb.Host, lb.Port, resp.Code, conn.ID, resp)
+			log["console"].Warning("Loadbalancer %s:%s responsed with error code %d to heartbeat on %s connID, response: %v", lb.Base.Host, lb.Base.Port, resp.Code, conn.ID, resp)
 			continue
 		}
 
 		//successfully connected to lb, now map them to thier data structures
-		log["console"].Debug("Response from loadbalancer %s:%s on conn(ID-%s, LocAddr-%s): %v", lb.Host, lb.Port, conn.ID, conn.Nc.LocalAddr(), resp)
+		log["console"].Debug("Response from loadbalancer %s:%s on conn(ID-%s, LocAddr-%s): %v", lb.Base.Host, lb.Base.Port, conn.ID, conn.Nc.LocalAddr(), resp)
 
 		if !okConn {
 			api.lbInfo[conn.ID] = lb
-			api.lbConn[lb.ID] = append(api.lbConn[lb.ID], conn)
+			api.lbConn[lb.Base.ID] = append(api.lbConn[lb.Base.ID], conn)
 		}
 
 		go api.messageWorker(conn)
@@ -319,34 +318,34 @@ func (api *APIGateway) syncLoadBalancers(msg protocol.Message) error {
 
 	existingByID := make(map[string]*protocol.LBalancerInfo)
 	for _, l := range api.lbInfo {
-		existingByID[l.ID] = l
+		existingByID[l.Base.ID] = l
 	}
 
 	hasLB := len(existingByID) > 0
 	skip := make([]bool, len(lbList))
 
 	for i, lb := range lbList {
-		log["console"].Debug("LB: %s:%s, ID: %s", lb.Host, lb.Port, lb.ID)
+		log["console"].Debug("LB: %s:%s, ID: %s", lb.Base.Host, lb.Base.Port, lb.Base.ID)
 
 		if hasLB {
-			if existingLB, exists := existingByID[lb.ID]; exists {
+			if existingLb, exists := existingByID[lb.Base.ID]; exists {
 				//change fields
-				existingLB.ID = lb.ID
-				existingLB.NodeID = lb.NodeID
-				existingLB.Host = lb.Host
-				existingLB.Port = lb.Port
-				existingLB.Microservices = lb.Microservices
-				existingLB.Status = lb.Status
+				existingLb.Base.ID = lb.Base.ID
+				existingLb.Base.NodeID = lb.Base.NodeID
+				existingLb.Base.Host = lb.Base.Host
+				existingLb.Base.Port = lb.Base.Port
+				existingLb.Microservices = lb.Microservices
+				existingLb.Base.Status = lb.Base.Status
 
 				skip[i] = true
-				log["console"].Debug("Updated existing LB data for ID: %s", lb.ID)
+				log["console"].Debug("Updated existing LB data for ID: %s", lb.Base.ID)
 			}
 		}
 	}
 
 	for i, lb := range lbList {
 		if !skip[i] {
-			log["console"].Debug("Connecting to new LB: %s:%s, ID: %s", lb.Host, lb.Port, lb.ID)
+			log["console"].Debug("Connecting to new LB: %s:%s, ID: %s", lb.Base.Host, lb.Base.Port, lb.Base.ID)
 			api.handleConnectionToLB(lb)
 		}
 	}
@@ -356,7 +355,7 @@ func (api *APIGateway) syncLoadBalancers(msg protocol.Message) error {
 func (api *APIGateway) messageWorker(conn *protocol.Connection) {
 	lb := api.lbInfo[conn.ID]
 
-	for msgEx := range api.requestChannelMap[lb.ID] {
+	for msgEx := range api.requestChannelMap[lb.Base.ID] {
 		_, ok := api.lbInfo[conn.ID]
 		if !ok {
 			log["console"].Debug("None existant connection conn =  - stopping messageWroker\n")
@@ -394,7 +393,7 @@ func (api *APIGateway) messageWorker(conn *protocol.Connection) {
 	//protocol.TryToConnect()
 }
 
-func (api *APIGateway) handleCliHandshake(conn *protocol.Connection) protocol.Message {
+func (api *APIGateway) handleCliHandshake(conn *protocol.Connection) (protocol.Message, []byte) {
 	var resp protocol.Message
 
 	var clientPubKey *rsa.PublicKey
@@ -434,8 +433,6 @@ func (api *APIGateway) handleCliHandshake(conn *protocol.Connection) protocol.Me
 		goto send
 	}
 
-	api.aesKey = aesKey
-
 	encKey, err = crypto.EncryptSessionKey(clientPubKey, aesKey)
 	if err != nil {
 		log["console"].Error("api: encrypt handshake ack: %v", err)
@@ -461,18 +458,18 @@ send:
 		log["console"].Error("api: failed to send handshake response: %v", err)
 	}
 
-	return resp
+	return resp, aesKey
 }
 
 func (api *APIGateway) handleClient(cliConn *protocol.Connection) {
 	defer cliConn.Close()
 
-	resp := api.handleCliHandshake(cliConn)
+	resp, cliAes := api.handleCliHandshake(cliConn)
 	if resp.Code != protocol.SUCCESS {
 		return
 	}
 
-	log["console"].Info("Succesfull handshake with client - messages will be encrypted, aes: %v", api.aesKey)
+	log["console"].Info("Succesfull handshake with client - messages will be encrypted, aes: %v", cliAes)
 
 	for {
 		cliRequest, err := protocol.Receive(cliConn.RW.Reader)
@@ -488,7 +485,7 @@ func (api *APIGateway) handleClient(cliConn *protocol.Connection) {
 			return
 		}
 
-		reqDecrypted, err := crypto.DecryptAES(cliRequest.Content, api.aesKey)
+		reqDecrypted, err := crypto.DecryptAES(cliRequest.Content, cliAes)
 		if err != nil {
 			log["console"].Error("Error while trying to decrypt request request from client: %v", err)
 			return
@@ -510,14 +507,14 @@ func (api *APIGateway) handleClient(cliConn *protocol.Connection) {
 			return
 		}
 
-		api.requestChannelMap[lb.ID] <- reqPool
+		api.requestChannelMap[lb.Base.ID] <- reqPool
 
 		var responseCli protocol.Message
 		for response := range reqPool.response {
 			response.ID = request.ID
 
 			//log["console"].Debug("trying to send response to client %v", response)
-			encDataBytes, err := crypto.EncryptAES(response.Content, api.aesKey)
+			encDataBytes, err := crypto.EncryptAES(response.Content, cliAes)
 
 			encData := base64.StdEncoding.EncodeToString(encDataBytes)
 
@@ -613,7 +610,7 @@ func (api *APIGateway) findLbForRequest(request protocol.Message) *protocol.LBal
 		}
 
 		//get first connection to lb
-		lbconn := api.lbConn[lbUpdate.ID][0]
+		lbconn := api.lbConn[lbUpdate.Base.ID][0]
 		lbfound := api.lbInfo[lbconn.ID]
 
 		log["console"].Debug("lb microservices: %v", lbUpdate.Microservices)
@@ -649,7 +646,7 @@ func (api *APIGateway) HandShake(conn *protocol.Connection) {
 		lb := api.lbInfo[conn.ID]
 
 		if resp.Code != protocol.SUCCESS {
-			log["console"].Error("Loadbalancer %s:%s responsed with error code %d to heartbeat on %s connID, response: %v", lb.Host, lb.Port, resp.Code, conn.ID, resp)
+			log["console"].Error("Loadbalancer %s:%s responsed with error code %d to heartbeat on %s connID, response: %v", lb.Base.Host, lb.Base.Port, resp.Code, conn.ID, resp)
 			return
 		}
 

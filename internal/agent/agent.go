@@ -162,14 +162,16 @@ func (a *Agent) createMicroservice(host string, port string, ms_type string) (*p
 	log["console"].Info("ms %s process started successfully! Pid: %d", ms_type, cmd.Process.Pid)
 
 	ms := &protocol.MsInfo{
-		ID:            crypto.GenerateID(crypto.INSTANCE_NODE),
-		NodeID:        a.nodeID,
-		PID:           cmd.Process.Pid,
-		Host:          host,
-		Port:          port,
-		LastHeartbeat: time.Now(),
-		Process:       cmd.Process,
-		Type:          protocol.ServiceType(ms_type),
+		Base: protocol.NodeBase{
+			ID:            crypto.GenerateID(crypto.INSTANCE_NODE),
+			NodeID:        a.nodeID,
+			Host:          host,
+			Port:          port,
+			LastHeartbeat: time.Now(),
+		},
+		PID:     cmd.Process.Pid,
+		Process: cmd.Process,
+		Type:    protocol.ServiceType(ms_type),
 	}
 
 	//check if connection works
@@ -193,13 +195,13 @@ func (a *Agent) KillAllMS() {
 
 func (a *Agent) connectToMicroservice(ms *protocol.MsInfo) error {
 
-	msConn, err := protocol.TryToConnect(net.JoinHostPort(ms.Host, ms.Port), 5*time.Second)
+	msConn, err := protocol.TryToConnect(net.JoinHostPort(ms.Base.Host, ms.Base.Port), 5*time.Second)
 	if err != nil {
 		return logger.StrToError(log, "Error while trying to connect to microservice %v", ms)
 	}
 
 	//set heartbeat after connection to prevents infitite "Unhealty loop"
-	ms.LastHeartbeat = time.Now()
+	ms.Base.LastHeartbeat = time.Now()
 
 	go msConn.ReceiveLoop(a)
 
@@ -218,8 +220,8 @@ func (a *Agent) connectToMicroservice(ms *protocol.MsInfo) error {
 
 	msConn.Mu.Lock()
 
-	ms.LastHeartbeat = time.Now()
-	a.msConn[ms.ID] = msConn
+	ms.Base.LastHeartbeat = time.Now()
+	a.msConn[ms.Base.ID] = msConn
 	a.msInfo[msConn.ID] = ms
 
 	msConn.Mu.Unlock()
@@ -306,18 +308,18 @@ func (a *Agent) handleRecover(request protocol.Message) protocol.Message {
 			err := a.connectToMicroservice(ms)
 			if err != nil {
 				log["console"].Warning("connecting to ms %v: %v", ms, err)
-				log["console"].Info("Restarting ms: %v-%v", ms.ID, ms.Type)
+				log["console"].Info("Restarting ms: %v-%v", ms.Base.ID, ms.Type)
 
 				if err = a.restartMs(ms); err != nil {
-					log["console"].Error("Restart ms %v: %v", ms.ID, err)
-					errList = append(errList, ms.ID)
+					log["console"].Error("Restart ms %v: %v", ms.Base.ID, err)
+					errList = append(errList, ms.Base.ID)
 					continue
 				}
 			}
 
 			if ms.Process, err = os.FindProcess(ms.PID); err != nil {
 				log["console"].Error("Finding ms process PID %v: %v", ms.PID, err)
-				errList = append(errList, ms.ID)
+				errList = append(errList, ms.Base.ID)
 				continue
 			}
 
@@ -344,10 +346,10 @@ func (a *Agent) watchMsHealth(ms *protocol.MsInfo) {
 	allowedDelay := 6 * time.Second
 
 	for {
-		timestamp := ms.LastHeartbeat
+		timestamp := ms.Base.LastHeartbeat
 		if time.Since(timestamp) > allowedDelay {
-			ms.Status = protocol.Unhealthy
-			log["console"].Debug("MS %v has status UNHEALTHY", ms.ID)
+			ms.Base.Status = protocol.Unhealthy
+			log["console"].Debug("MS %v has status UNHEALTHY", ms.Base.ID)
 
 			go a.restartMs(ms)
 			//a.restartMs(ms)
@@ -368,10 +370,10 @@ func (a *Agent) restartMs(ms *protocol.MsInfo) error {
 
 	//Both of errors are more of an debug if process and connection were already finished
 	if err := ms.Process.Kill(); err != nil {
-		log["console"].Warning("killing microservice %v process: %v", ms.ID, err)
+		log["console"].Warning("killing microservice %v process: %v", ms.Base.ID, err)
 	}
 
-	prevConn = a.msConn[ms.ID]
+	prevConn = a.msConn[ms.Base.ID]
 	if err := prevConn.Nc.Close(); err != nil {
 		log["console"].Warning("close previous microservice connection: %v", err)
 	}
@@ -379,7 +381,7 @@ func (a *Agent) restartMs(ms *protocol.MsInfo) error {
 newMS:
 	cmd := exec.Command(
 		platform.Executable("service"),
-		"--port", ms.Port,
+		"--port", ms.Base.Port,
 		"--type", string(ms.Type),
 	)
 	cmd.Stdout = os.Stdout
@@ -395,11 +397,11 @@ newMS:
 	ms.Process = cmd.Process
 	ms.PID = ms.Process.Pid
 
-	log["console"].Info("Restarted ms process %s-%s successfully! Pid: %d", ms.ID, ms.Type, ms.Process.Pid)
+	log["console"].Info("Restarted ms process %s-%s successfully! Pid: %d", ms.Base.ID, ms.Type, ms.Process.Pid)
 
 	err = a.connectToMicroservice(ms)
 	if err != nil {
-		strErr = fmt.Sprintf("Connection to ms id-%v: %v", ms.ID, err)
+		strErr = fmt.Sprintf("Connection to ms id-%v: %v", ms.Base.ID, err)
 		log["console"].Error(strErr)
 		return logger.StrToError(log, strErr)
 	}
@@ -417,10 +419,10 @@ func (a *Agent) ReceiveHeartBeat(msg protocol.Message, conn *protocol.Connection
 	defer a.RWmu.Unlock()
 	if ms, ok := a.msInfo[conn.ID]; ok {
 		ms.Mu.Lock()
-		ms.LastHeartbeat = time.Now()
-		ms.Status = protocol.Healthy
+		ms.Base.LastHeartbeat = time.Now()
+		ms.Base.Status = protocol.Healthy
 		ms.Mu.Unlock()
-		log["console"].Debug("Microservice %v heartbeat is %v", ms.ID, ms.LastHeartbeat)
+		log["console"].Debug("Microservice %v heartbeat is %v", ms.Base.ID, ms.Base.LastHeartbeat)
 
 	} else {
 		log["console"].Error("Unknown microservice in connection with id: %v", conn.ID)

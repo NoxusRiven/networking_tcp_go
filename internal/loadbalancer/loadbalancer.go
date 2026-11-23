@@ -191,14 +191,14 @@ func (lb *LoadBalancer) handleRequest(request protocol.Message, conn *protocol.C
 			existingByID := make(map[string]*protocol.MsInfo)
 			for _, mses := range lb.msInfo {
 				for _, ms := range mses {
-					existingByID[ms.ID] = ms
+					existingByID[ms.Base.ID] = ms
 				}
 			}
 
 			var errList []string
 			for _, mses := range msMap {
 				for _, ms := range mses {
-					if _, ok := existingByID[ms.ID]; ok {
+					if _, ok := existingByID[ms.Base.ID]; ok {
 						continue
 					}
 
@@ -243,7 +243,7 @@ func (lb *LoadBalancer) handleRequest(request protocol.Message, conn *protocol.C
 
 		ms := services[0]
 
-		msConn := lb.msConn[ms.ID]
+		msConn := lb.msConn[ms.Base.ID]
 
 		if msConn == nil {
 			response = protocol.Message{
@@ -342,16 +342,18 @@ func parseMsFromMessage(msg protocol.Message) (*protocol.MsInfo, error) {
 	log["console"].Debug("Ms created from message (%v %v %v %v %v)", dataSplit[0], dataSplit[1], dataSplit[2], dataSplit[3], dataSplit[4])
 
 	return &protocol.MsInfo{
-		ID:     dataSplit[0],
-		Host:   dataSplit[1],
-		Port:   dataSplit[2],
-		NodeID: dataSplit[3],
-		Type:   protocol.ServiceType(dataSplit[4]),
+		Base: protocol.NodeBase{
+			ID:     dataSplit[0],
+			Host:   dataSplit[1],
+			Port:   dataSplit[2],
+			NodeID: dataSplit[3],
+		},
+		Type: protocol.ServiceType(dataSplit[4]),
 	}, nil
 }
 
 func (lb *LoadBalancer) connectToMicroservice(ms *protocol.MsInfo) error {
-	address := net.JoinHostPort(ms.Host, ms.Port)
+	address := net.JoinHostPort(ms.Base.Host, ms.Base.Port)
 
 	conn, err := protocol.TryToConnect(address, 10*time.Second)
 	if err != nil {
@@ -375,7 +377,7 @@ func (lb *LoadBalancer) connectToMicroservice(ms *protocol.MsInfo) error {
 
 	conn.Mu.Lock()
 	lb.msInfo[ms.Type] = append(lb.msInfo[ms.Type], ms)
-	lb.msConn[ms.ID] = conn
+	lb.msConn[ms.Base.ID] = conn
 	conn.Mu.Unlock()
 
 	return nil
@@ -397,7 +399,7 @@ func (lb *LoadBalancer) handleRecover(request protocol.Message) protocol.Message
 
 	for _, mses := range services {
 		for _, ms := range mses {
-			if ms.Status == protocol.Unhealthy {
+			if ms.Base.Status == protocol.Unhealthy {
 				log["console"].Error("Found ms but status is UNHEALTHY")
 				continue
 			}
@@ -477,7 +479,7 @@ func (lb *LoadBalancer) AsyncEvent(request protocol.Message, conn *protocol.Conn
 		_, ok := lb.msInfo[ms.Type]
 		conn.RWmu.Unlock()
 
-		if ms.Status == protocol.Unhealthy {
+		if ms.Base.Status == protocol.Unhealthy {
 			strErr := "Found ms but has status UNHEALTHY"
 			log["console"].Error(strErr)
 			response = protocol.Message{
@@ -503,7 +505,7 @@ func (lb *LoadBalancer) AsyncEvent(request protocol.Message, conn *protocol.Conn
 				break
 			}
 
-			log["console"].Debug("Successfully added ms to register %v:%v type:%v\n", ms.Host, ms.Port, ms.Type)
+			log["console"].Debug("Successfully added ms to register %v:%v type:%v\n", ms.Base.Host, ms.Base.Port, ms.Type)
 		}
 
 		response = protocol.Message{ID: request.ID, Type: request.Type, Code: protocol.SUCCESS}
