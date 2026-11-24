@@ -29,6 +29,10 @@ tmux split-window -t workspace:system -h \
     -c "$PROJECT_HOME/cmd/client" \
     "$SHELL_CMD"
 
+tmux split-window -t workspace:system -h \
+    -c "$PROJECT_HOME/cmd/client" \
+    "$SHELL_CMD"
+
 tmux new-window -t workspace \
     -n control \
     -c "$PROJECT_HOME" \

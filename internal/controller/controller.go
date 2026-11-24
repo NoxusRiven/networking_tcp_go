@@ -9,16 +9,16 @@ import (
 	"networking/tcp/internal/logger"
 	"networking/tcp/internal/platform"
 	"networking/tcp/internal/protocol"
+	"networking/tcp/internal/utils"
 	"os"
 	"os/exec"
+	"strconv"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
 const (
 	CACHE_FILE = "controller.cache.json"
-	//TMP_CACHE_FILE = "controller.cache.json.tmp"
 )
 
 var log logger.Loggers = logger.NewLoggers(
@@ -30,18 +30,19 @@ var log logger.Loggers = logger.NewLoggers(
 )
 
 // ##################################### STRUCTURES #####################################
-// TODO: controller should update "lastHeartbeat" of nodes when they send hearthbeat and with every interaction
 // TODO: only add second connection and use it when working with files
 // TODO: if agent is in the same host as controller he can choose ports otherwise controller sets boundry or just a free port and agents sends back wich port he got in remote host
 type Controller struct {
 	//constant values
-	BASE_PORT_AGENT string
+	BASE_PORT_AGENT uint16
 	HOST_AGENT      string
+	agentPortCount  uint16
 
-	BASE_PORT_LBALANCER string
+	BASE_PORT_LBALANCER uint16
 	HOST_LBALANCER      string
+	lbPortCount         uint32
 
-	PORT string
+	PORT uint16
 
 	listener net.Listener
 
@@ -69,6 +70,9 @@ type Controller struct {
 func NewController() *Controller {
 
 	return &Controller{
+		agentPortCount: 0,
+		lbPortCount:    0,
+
 		AgentInfo:  make(map[string]*protocol.AgentInfo),
 		agentsConn: make(map[string]*protocol.Connection),
 
@@ -126,7 +130,7 @@ func (c *Controller) setup() (bool, error) {
 }
 
 func (c *Controller) run() error {
-	apiListener, err := net.Listen("tcp", ":"+c.PORT)
+	apiListener, err := net.Listen("tcp", fmt.Sprintf(":%d", c.PORT))
 	if err != nil {
 		return err
 	}
@@ -201,13 +205,21 @@ func (c *Controller) Remove(conn *protocol.Connection, infoID string, connType p
 func (c *Controller) createNewMessageNode() (*protocol.AgentInfo, *protocol.LBalancerInfo, error) {
 	nodeID := crypto.GenerateID(crypto.MESSAGE_NODE)
 
-	agent, err := c.createNewAgent(c.BASE_PORT_AGENT, nodeID)
+	cast := uint64(c.agentPortCount)
+	newPort := utils.IncUint(&cast, utils.SIZE_16) + uint64(c.BASE_PORT_AGENT)
+	portStr := fmt.Sprintf("%d", newPort)
+
+	agent, err := c.createNewAgent(portStr, nodeID)
 	if err != nil {
 		return nil, nil, err
 	}
 
+	cast = uint64(c.lbPortCount)
+	newPort = utils.IncUint(&cast, utils.SIZE_32) + uint64(c.BASE_PORT_LBALANCER)
+	portStr = fmt.Sprintf("%d", newPort)
+
 	//TODO: handle cleaning up agent (no point for agent that doesnt have lb)
-	lb, err := c.createNewLoadBalancer(c.BASE_PORT_LBALANCER)
+	lb, err := c.createNewLoadBalancer(portStr)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -223,11 +235,31 @@ func (c *Controller) createNewMessageNode() (*protocol.AgentInfo, *protocol.LBal
 
 func (c *Controller) ReceiveHeartBeat(msg protocol.Message, conn *protocol.Connection) {
 	//log["console"].Debug("Received heart-beat: %v", msg)
-	switch msg.Content {
+	switch msg.Sender {
 	case "AGENT":
+		//! Same as in lb
 		c.updateAgentHeartbeat(conn.ID)
-	case "LB":
-		c.updateLBHeartbeat(conn.ID)
+	case "LOADBALANCER":
+		if lb, ok := c.LbInfo[conn.ID]; ok {
+			val, err := strconv.ParseUint(msg.Content, 10, 64)
+			if err != nil {
+				log["console"].Error("Unable to parse string to int %v", msg.Content)
+			}
+
+			lb.Base.CurrentLoad.UpdateValue(uint32(val))
+			log["console"].Debug("Current lb load: %v", lb.Base.CurrentLoad.GetValue())
+			if !lb.Base.IsLoadStable() {
+				log["console"].Debug("Loadbalancer %v is overloaded, creating new one", lb.Base.ID)
+
+				cast := uint64(c.lbPortCount)
+				val := utils.IncUint(&cast, utils.SIZE_32)
+				go c.createNewLoadBalancer(fmt.Sprintf("%d", val))
+			}
+
+			c.updateLBHeartbeat(lb)
+		} else {
+			log["console"].Error("Unknown lb in connection: %v", c.agentsConn[lb.Base.ID])
+		}
 	}
 }
 
@@ -323,12 +355,10 @@ func (c *Controller) handleCreate(msg protocol.Message) protocol.Message {
 		}
 
 		return protocol.Message{
-			ID:           msg.ID,
-			SessionID:    msg.SessionID,
-			ConnectionID: msg.ConnectionID,
-			Type:         protocol.UPDATE,
-			Code:         code,
-			Content:      lbJson,
+			ID:      msg.ID,
+			Type:    protocol.UPDATE,
+			Code:    code,
+			Content: lbJson,
 		}
 	}
 
@@ -338,12 +368,10 @@ func (c *Controller) handleCreate(msg protocol.Message) protocol.Message {
 	if err != nil {
 		log["console"].Error("Error creating service: %v", err)
 		return protocol.Message{
-			ID:           msg.ID,
-			SessionID:    msg.SessionID,
-			ConnectionID: msg.ConnectionID,
-			Type:         protocol.CREATE,
-			Code:         protocol.ERROR,
-			Content:      err.Error(),
+			ID:      msg.ID,
+			Type:    protocol.CREATE,
+			Code:    protocol.ERROR,
+			Content: err.Error(),
 		}
 	} else {
 
@@ -356,12 +384,10 @@ func (c *Controller) handleCreate(msg protocol.Message) protocol.Message {
 
 		//update api lb data
 		return protocol.Message{
-			ID:           msg.ID,
-			SessionID:    msg.SessionID,
-			ConnectionID: msg.ConnectionID,
-			Type:         protocol.UPDATE,
-			Code:         code,
-			Content:      lbJson,
+			ID:      msg.ID,
+			Type:    protocol.UPDATE,
+			Code:    code,
+			Content: lbJson,
 		}
 	}
 
@@ -630,11 +656,10 @@ func (c *Controller) handleConnection(nc net.Conn) {
 		errMsg := "expected Handshake with type HELLO"
 		log["console"].Error(errMsg)
 		response = protocol.Message{
-			ID:        msg.ID,
-			SessionID: msg.SessionID,
-			Code:      protocol.ERROR,
-			Type:      msg.Type,
-			Content:   errMsg,
+			ID:      msg.ID,
+			Code:    protocol.ERROR,
+			Type:    msg.Type,
+			Content: errMsg,
 		}
 
 		goto send
@@ -658,11 +683,10 @@ func (c *Controller) handleConnection(nc net.Conn) {
 		errMsg := fmt.Sprintf("Unknow Node connected %v", msg)
 		log["console"].Error(errMsg)
 		response = protocol.Message{
-			ID:        msg.ID,
-			SessionID: msg.SessionID,
-			Code:      protocol.ERROR,
-			Type:      msg.Type,
-			Content:   errMsg,
+			ID:      msg.ID,
+			Code:    protocol.ERROR,
+			Type:    msg.Type,
+			Content: errMsg,
 		}
 	}
 
@@ -726,7 +750,8 @@ func (c *Controller) syncWithAPI() error {
 
 // ################################# AGENT FUNCTIONS ###############################
 func (c *Controller) GetNextNodeID() uint32 {
-	return atomic.AddUint32(&c.NextID, 1)
+	cast := uint64(c.NextID)
+	return uint32(utils.IncUint(&cast, utils.SIZE_32))
 }
 
 // createNewAgent spawns an agent process, assigns host:port, and registers it.
@@ -1018,19 +1043,14 @@ func (c *Controller) KillAllLoadBalancers() {
 	c.lbConn = make(map[string]*protocol.Connection)
 }
 
-func (c *Controller) updateLBHeartbeat(id string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if lb, ok := c.LbInfo[id]; ok {
-		lb.Mu.Lock()
-		lb.Base.LastHeartbeat = time.Now()
-		lb.Base.Status = protocol.Healthy
-		lb.Mu.Unlock()
-		log["console"].Debug("LoadBalancer %v heartbeat is %v", lb.Base.ID, lb.Base.LastHeartbeat)
+func (c *Controller) updateLBHeartbeat(lb *protocol.LBalancerInfo) {
 
-	} else {
-		log["console"].Error("Unknown lb in connection: %v", c.agentsConn[lb.Base.ID])
-	}
+	lb.Mu.Lock()
+	lb.Base.LastHeartbeat = time.Now()
+	lb.Base.Status = protocol.Healthy
+	lb.Mu.Unlock()
+	log["console"].Debug("LoadBalancer %v heartbeat is %v", lb.Base.ID, lb.Base.LastHeartbeat)
+
 }
 
 func (c *Controller) restartLb(lb *protocol.LBalancerInfo) {
@@ -1164,9 +1184,8 @@ func (c *Controller) createNewService(serviceType protocol.ServiceType) (*protoc
 
 	// message agent to create service
 	request := protocol.Message{
-		SessionID: agent.Base.ID,
-		Type:      protocol.CREATE,
-		Content:   string(serviceType),
+		Type:    protocol.CREATE,
+		Content: string(serviceType),
 	}
 
 	response, err := agentConn.SendRequest(request)
@@ -1187,9 +1206,8 @@ func (c *Controller) createNewService(serviceType protocol.ServiceType) (*protoc
 
 	//inform load balancer about newly created service
 	request = protocol.Message{
-		SessionID: response.SessionID,
-		Type:      protocol.UPDATE,
-		Content:   string(ms.Base.ID + ";" + ms.Base.Host + ";" + ms.Base.Port + ";" + ms.Base.NodeID + ";" + string(ms.Type)),
+		Type:    protocol.UPDATE,
+		Content: string(ms.Base.ID + ";" + ms.Base.Host + ";" + ms.Base.Port + ";" + ms.Base.NodeID + ";" + string(ms.Type)),
 	}
 
 	response, err = lbConn.SendRequest(request)
@@ -1200,7 +1218,7 @@ func (c *Controller) createNewService(serviceType protocol.ServiceType) (*protoc
 	}
 
 	//same as with agent
-	c.updateLBHeartbeat(lbConn.ID)
+	c.updateLBHeartbeat(lb)
 
 	log["console"].Debug("LB response after getting ms data: %v", response)
 

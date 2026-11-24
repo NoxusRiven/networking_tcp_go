@@ -7,7 +7,9 @@ import (
 	json "networking/tcp/internal/json"
 	"networking/tcp/internal/logger"
 	"networking/tcp/internal/protocol"
+	"networking/tcp/internal/utils"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -32,6 +34,8 @@ type LoadBalancer struct {
 	listener net.Listener
 
 	RWmu sync.RWMutex
+
+	currentLoad utils.Counter
 }
 
 func NewLoadBalancer(listPort string) (*LoadBalancer, error) {
@@ -127,22 +131,19 @@ func (lb *LoadBalancer) registerConnection(nc net.Conn) (*protocol.Connection, b
 }
 
 func (lb *LoadBalancer) handleRequest(request protocol.Message, conn *protocol.Connection) {
+
+	lb.currentLoad.IncLoad()
+	log["console"].Debug("current load increasted: %v", lb.currentLoad.GetValue())
+	defer func() {
+		log["console"].Debug("------- Decrementing counter --------")
+		lb.currentLoad.DecLoad()
+	}()
+
 	var response protocol.Message
 	var respChan <-chan protocol.Message = nil
 	var err error
 
 	switch request.Type {
-
-	//? I think this is also unreachable (shount) state but make sure
-	// case protocol.RECOVER:
-	// 	log["console"].Debug("Got recover message %v", request)
-	// 	response = protocol.Message{ID: request.ID, Type: request.Type, Code: protocol.SUCCESS}
-
-	//? Not sure if there is a case where hello message is sent in receive loop
-	// case protocol.HELLO:
-	// 	log["console"].Debug("Received handshake hello message")
-	// 	response = protocol.Message{ID: request.ID, Type: request.Type, Code: protocol.SUCCESS, Content: lb.String()}
-
 	//microservice operations
 	case protocol.PING:
 		fallthrough
@@ -247,11 +248,10 @@ func (lb *LoadBalancer) handleRequest(request protocol.Message, conn *protocol.C
 
 		if msConn == nil {
 			response = protocol.Message{
-				ID:           request.ID,
-				Type:         request.Type,
-				Code:         protocol.ERROR,
-				ConnectionID: request.ConnectionID,
-				Content:      "Connection to ms is nil",
+				ID:      request.ID,
+				Type:    request.Type,
+				Code:    protocol.ERROR,
+				Content: "Connection to ms is nil",
 			}
 			break
 		}
@@ -262,11 +262,10 @@ func (lb *LoadBalancer) handleRequest(request protocol.Message, conn *protocol.C
 		//response, err = msConn.SendRequest(request)
 		if err != nil {
 			response = protocol.Message{
-				ID:           request.ID,
-				Type:         request.Type,
-				Code:         protocol.ERROR,
-				ConnectionID: request.ConnectionID,
-				Content:      err.Error(),
+				ID:      request.ID,
+				Type:    request.Type,
+				Code:    protocol.ERROR,
+				Content: err.Error(),
 			}
 		}
 		log["console"].Debug("Request was sent successfuly: %v", request)
@@ -304,19 +303,23 @@ func (lb *LoadBalancer) handleRequest(request protocol.Message, conn *protocol.C
 			}
 		}
 	}
+
+	//log["console"].Debug("------ Handle Request ended ------")
 }
 
-func (a *LoadBalancer) SendHeartBeat(conn *protocol.Connection) {
+func (lb *LoadBalancer) SendHeartBeat(conn *protocol.Connection) {
 
 	msg := protocol.Message{
-		Type:    protocol.HEARTBEAT,
-		Content: "LB",
+		Type:   protocol.HEARTBEAT,
+		Sender: lb.String(),
 	}
 
 	for {
 		time.Sleep(5 * time.Second)
 
 		msg.ID = crypto.GenerateID(crypto.MESSAGE_ID)
+		msg.Content = strconv.FormatUint(uint64(lb.currentLoad.GetValue()), 10)
+
 		if err := protocol.Send(conn.RW.Writer, msg); err != nil {
 			log["console"].Error("Error sending heartbeat: %v", err)
 		}
@@ -466,11 +469,10 @@ func (lb *LoadBalancer) AsyncEvent(request protocol.Message, conn *protocol.Conn
 		ms, err := parseMsFromMessage(request)
 		if err != nil {
 			response = protocol.Message{
-				ID:           request.ID,
-				Type:         protocol.UPDATE,
-				ConnectionID: request.ConnectionID,
-				Code:         protocol.ERROR,
-				Content:      err.Error(),
+				ID:      request.ID,
+				Type:    protocol.UPDATE,
+				Code:    protocol.ERROR,
+				Content: err.Error(),
 			}
 			break
 		}
@@ -496,11 +498,10 @@ func (lb *LoadBalancer) AsyncEvent(request protocol.Message, conn *protocol.Conn
 			err := lb.connectToMicroservice(ms)
 			if err != nil {
 				response = protocol.Message{
-					ID:           request.ID,
-					Type:         protocol.UPDATE,
-					ConnectionID: request.ConnectionID,
-					Code:         protocol.ERROR,
-					Content:      err.Error(),
+					ID:      request.ID,
+					Type:    protocol.UPDATE,
+					Code:    protocol.ERROR,
+					Content: err.Error(),
 				}
 				break
 			}

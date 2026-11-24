@@ -21,7 +21,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	api_gateway, err := api.NewAPIGateway(apiNode.Port)
+	api_gateway, err := api.NewAPIGateway(fmt.Sprintf("%d", apiNode.Port))
 	if err != nil {
 		fmt.Println("Error:", err)
 		os.Exit(1)

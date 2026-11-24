@@ -7,7 +7,9 @@ import (
 	crypto "networking/tcp/internal/crypto"
 	"networking/tcp/internal/logger"
 	"networking/tcp/internal/protocol"
+	"networking/tcp/internal/utils"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -28,6 +30,8 @@ type Microservice struct {
 
 	listener net.Listener
 	Service  Service
+
+	currentLoad utils.Counter
 }
 
 func NewMicroservice(listenerPort string) (*Microservice, error) {
@@ -118,12 +122,10 @@ func (ms *Microservice) Work(conn *protocol.Connection) {
 			log["console"].Error(errStr)
 
 			response := protocol.Message{
-				ID:           request.ID,
-				SessionID:    request.SessionID,
-				ConnectionID: request.ConnectionID,
-				Type:         request.Type,
-				Code:         protocol.ERROR,
-				Content:      errStr,
+				ID:      request.ID,
+				Type:    request.Type,
+				Code:    protocol.ERROR,
+				Content: errStr,
 			}
 
 			if err := protocol.Send(ms.LbConn.RW.Writer, response); err != nil {
@@ -131,7 +133,12 @@ func (ms *Microservice) Work(conn *protocol.Connection) {
 			}
 
 		} else {
-			go ms.Service.HandleRequest(request)
+			go func() {
+				ms.currentLoad.IncLoad()
+				defer ms.currentLoad.DecLoad()
+
+				ms.Service.HandleRequest(request)
+			}()
 		}
 	}
 }
@@ -139,12 +146,15 @@ func (ms *Microservice) Work(conn *protocol.Connection) {
 func (ms *Microservice) SendHeartBeat(conn *protocol.Connection) {
 	msg := protocol.Message{
 		Type: protocol.HEARTBEAT,
+		//Sender: "MICROSERVICE",
 	}
 
 	for {
 		time.Sleep(5 * time.Second)
 
 		msg.ID = crypto.GenerateID(crypto.MESSAGE_ID)
+		msg.Content = strconv.FormatUint(uint64(ms.currentLoad.GetValue()), 10)
+
 		if err := protocol.Send(conn.RW.Writer, msg); err != nil {
 			log["console"].Error("Error accured when trying to send heart beat to agent %v", err)
 			break

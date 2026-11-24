@@ -27,7 +27,7 @@ type Config struct {
 
 type ConfigNode struct {
 	Name string `json:"node"`
-	Port string `json:"port"`
+	Port uint16 `json:"port"`
 	Host string `json:"host"`
 }
 
@@ -78,13 +78,13 @@ func (conf *Config) FindAddrByNodeName(nodeName CNN) (string, error) {
 	//return joined host:port
 	host := "localhost"
 
-	if nodeFound.Port != "" {
+	if nodeFound.Port != 0 {
 
 		if nodeFound.Host != "" {
 			host = nodeFound.Host
 		}
 
-		return net.JoinHostPort(host, nodeFound.Port), nil
+		return net.JoinHostPort(host, fmt.Sprintf("%d", nodeFound.Port)), nil
 	}
 
 	return "", fmt.Errorf("Node '%v' has no field 'port' defined in config file\n", nodeName)

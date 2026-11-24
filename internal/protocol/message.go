@@ -50,13 +50,14 @@ const (
 )
 
 type Message struct {
-	ID           string      `json:"ID,omitempty"`
-	SessionID    string      `json:"sessionID,omitempty"`
-	ConnectionID string      `json:"connectionID,omitempty"`
-	Type         MessageType `json:"type"`
-	IsStream     bool        `json:"isStream,omitempty"`
-	Code         CodeType    `json:"code,omitempty"`
-	Content      string      `json:"content,omitempty"`
+	ID string `json:"ID"`
+	//SessionID    string      `json:"sessionID,omitempty"`
+	//ConnectionID string      `json:"connectionID,omitempty"`
+	Type     MessageType `json:"type"`
+	Sender   string      `json:"sender,omitempty"`
+	IsStream bool        `json:"isStream,omitempty"`
+	Code     CodeType    `json:"code,omitempty"`
+	Content  string      `json:"content,omitempty"`
 
 	Keys crypto.KeyPayload `json:"keys,omitempty"`
 }

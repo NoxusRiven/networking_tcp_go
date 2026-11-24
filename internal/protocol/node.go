@@ -1,9 +1,16 @@
 package protocol
 
-import "time"
+import (
+	"networking/tcp/internal/utils"
+	"time"
+)
 
 //TODO: lil rework should be done to this idea
 //! old interface
+
+const (
+	MAX_NODE_LOAD = 2
+)
 
 type Node interface {
 	ReceiveHeartBeat(Message, *Connection)
@@ -22,7 +29,11 @@ type NodeBase struct {
 	LastHeartbeat time.Time
 	Status        NodeStatus
 
-	CurrentLoad uint16
+	CurrentLoad utils.Counter
+}
+
+func (n *NodeBase) IsLoadStable() bool {
+	return n.CurrentLoad.GetValue() < MAX_NODE_LOAD
 }
 
 //idea behind is that some nodes like CLI are pure nodes without Worker or Manager methods, and some only Work and doesnt Manage

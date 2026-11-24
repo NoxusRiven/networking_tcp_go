@@ -23,7 +23,7 @@ const (
 )
 
 const (
-	MAX_NODE_LOAD = 5
+	MAX_LB_PER_MSG_NODE = MAX_NODE_LOAD
 )
 
 type AgentInfo struct {

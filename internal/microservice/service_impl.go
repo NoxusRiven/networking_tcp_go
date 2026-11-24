@@ -26,12 +26,10 @@ func (ping *PingService) HandleRequest(request protocol.Message) {
 	curr_time := time.Now()
 
 	response := protocol.Message{
-		ID:           request.ID,
-		SessionID:    request.SessionID,
-		ConnectionID: request.ConnectionID,
-		Type:         request.Type,
-		Code:         protocol.SUCCESS,
-		Content:      curr_time.Format("2006-01-02 15:04:05"),
+		ID:      request.ID,
+		Type:    request.Type,
+		Code:    protocol.SUCCESS,
+		Content: curr_time.Format("2006-01-02 15:04:05"),
 	}
 
 	log["console"].Debug("sending response to lb %v", response)
@@ -49,13 +47,11 @@ func (idle *IdleService) HandleRequest(request protocol.Message) {
 	//sending work n times
 	for i := 0; i < n; i++ {
 		response := protocol.Message{
-			ID:           request.ID,
-			SessionID:    request.SessionID,
-			ConnectionID: request.ConnectionID,
-			Type:         request.Type,
-			IsStream:     true,
-			Code:         protocol.SUCCESS,
-			Content:      strconv.Itoa(i),
+			ID:       request.ID,
+			Type:     request.Type,
+			IsStream: true,
+			Code:     protocol.SUCCESS,
+			Content:  strconv.Itoa(i),
 		}
 
 		err := protocol.Send(idle.Fields.Parent.LbConn.RW.Writer, response)
@@ -68,11 +64,9 @@ func (idle *IdleService) HandleRequest(request protocol.Message) {
 	}
 
 	response := protocol.Message{
-		ID:           request.ID,
-		SessionID:    request.SessionID,
-		ConnectionID: request.ConnectionID,
-		Type:         request.Type,
-		Code:         protocol.SUCCESS,
+		ID:   request.ID,
+		Type: request.Type,
+		Code: protocol.SUCCESS,
 	}
 
 	log["console"].Debug("sending response to lb %v", response)

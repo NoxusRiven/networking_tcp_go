@@ -8,6 +8,7 @@ import (
 	"networking/tcp/internal/logger"
 	"networking/tcp/internal/platform"
 	"networking/tcp/internal/protocol"
+	"networking/tcp/internal/utils"
 	"os"
 	"os/exec"
 	"strconv"
@@ -43,6 +44,8 @@ type Agent struct {
 
 	//adding to base port number for ms
 	nextPortCount uint16
+
+	currentLoad utils.Counter
 }
 
 // TODO: handle getting free port and communicating it to controller
@@ -122,8 +125,8 @@ func (a *Agent) handleController(conn *protocol.Connection) {
 func (a *Agent) SendHeartBeat(conn *protocol.Connection) {
 
 	msg := protocol.Message{
-		Type:    protocol.HEARTBEAT,
-		Content: "AGENT",
+		Type:   protocol.HEARTBEAT,
+		Sender: "AGENT",
 	}
 
 	for {
@@ -418,7 +421,14 @@ func (a *Agent) ReceiveHeartBeat(msg protocol.Message, conn *protocol.Connection
 	a.RWmu.Lock()
 	defer a.RWmu.Unlock()
 	if ms, ok := a.msInfo[conn.ID]; ok {
+		val, err := strconv.ParseUint(msg.Content, 10, 64)
+		if err != nil {
+			log["console"].Error("Unable to parse string to int %v", msg.Content)
+		}
 		ms.Mu.Lock()
+		ms.Base.CurrentLoad.UpdateValue(uint32(val))
+		log["console"].Debug("Current ms load: %v", ms.Base.CurrentLoad.GetValue())
+
 		ms.Base.LastHeartbeat = time.Now()
 		ms.Base.Status = protocol.Healthy
 		ms.Mu.Unlock()
