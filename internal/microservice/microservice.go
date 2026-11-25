@@ -134,8 +134,8 @@ func (ms *Microservice) Work(conn *protocol.Connection) {
 
 		} else {
 			go func() {
-				ms.currentLoad.IncLoad()
-				defer ms.currentLoad.DecLoad()
+				ms.currentLoad.IncValue()
+				defer ms.currentLoad.DecValue()
 
 				ms.Service.HandleRequest(request)
 			}()

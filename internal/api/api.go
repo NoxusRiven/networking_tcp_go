@@ -566,7 +566,7 @@ func (api *APIGateway) findLbForRequest(request protocol.Message) *protocol.LBal
 	log["console"].Debug("Request type str: %v", string(request.Type))
 	var lb *protocol.LBalancerInfo
 	for _, lbInf := range api.lbInfo {
-		if _, ok := lbInf.Microservices[protocol.ServiceType(request.Type)]; ok {
+		if _, ok := lbInf.Microservices[protocol.ServiceType(request.Type)]; ok && lbInf.Base.Status == protocol.Healthy {
 			lb = lbInf
 			break
 		}

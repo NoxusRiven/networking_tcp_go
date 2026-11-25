@@ -36,13 +36,15 @@ type Controller struct {
 	//constant values
 	BASE_PORT_AGENT uint16
 	HOST_AGENT      string
-	agentPortCount  uint16
+	agentPortCount  utils.Counter
 
 	BASE_PORT_LBALANCER uint16
 	HOST_LBALANCER      string
-	lbPortCount         uint32
+	lbPortCount         utils.Counter
 
 	PORT uint16
+
+	currentNodeID string
 
 	listener net.Listener
 
@@ -61,7 +63,7 @@ type Controller struct {
 
 	mu sync.RWMutex
 
-	NextID uint32 `json:"nextID"` // id tracker of agent and load balancer
+	NextID utils.Counter `json:"nextID"` // id tracker of agent and load balancer
 }
 
 // ##################################### STRUCTURES #####################################
@@ -70,9 +72,6 @@ type Controller struct {
 func NewController() *Controller {
 
 	return &Controller{
-		agentPortCount: 0,
-		lbPortCount:    0,
-
 		AgentInfo:  make(map[string]*protocol.AgentInfo),
 		agentsConn: make(map[string]*protocol.Connection),
 
@@ -80,8 +79,6 @@ func NewController() *Controller {
 		lbConn: make(map[string]*protocol.Connection),
 
 		Microservices: make(map[protocol.ServiceType][]*protocol.MsInfo),
-
-		NextID: 0,
 	}
 }
 
@@ -205,21 +202,20 @@ func (c *Controller) Remove(conn *protocol.Connection, infoID string, connType p
 func (c *Controller) createNewMessageNode() (*protocol.AgentInfo, *protocol.LBalancerInfo, error) {
 	nodeID := crypto.GenerateID(crypto.MESSAGE_NODE)
 
-	cast := uint64(c.agentPortCount)
-	newPort := utils.IncUint(&cast, utils.SIZE_16) + uint64(c.BASE_PORT_AGENT)
-	portStr := fmt.Sprintf("%d", newPort)
+	c.currentNodeID = nodeID
 
-	agent, err := c.createNewAgent(portStr, nodeID)
+	port := c.agentPortCount.GetValue() + uint32(c.BASE_PORT_AGENT)
+	c.agentPortCount.IncValue()
+
+	agent, err := c.createNewAgent(fmt.Sprintf("%d", port), nodeID)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	cast = uint64(c.lbPortCount)
-	newPort = utils.IncUint(&cast, utils.SIZE_32) + uint64(c.BASE_PORT_LBALANCER)
-	portStr = fmt.Sprintf("%d", newPort)
+	port = c.lbPortCount.GetValue() + uint32(c.BASE_PORT_LBALANCER)
+	c.lbPortCount.IncValue()
 
-	//TODO: handle cleaning up agent (no point for agent that doesnt have lb)
-	lb, err := c.createNewLoadBalancer(portStr)
+	lb, err := c.createNewLoadBalancer(fmt.Sprintf("%d", port))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -233,28 +229,53 @@ func (c *Controller) createNewMessageNode() (*protocol.AgentInfo, *protocol.LBal
 	return agent, lb, nil
 }
 
+func (c *Controller) updateAndHandleLoadCounter(lb *protocol.LBalancerInfo, loadCounter string) {
+	val, err := strconv.ParseUint(loadCounter, 10, 64)
+	if err != nil {
+		log["console"].Error("Unable to parse string to int %v", loadCounter)
+	}
+
+	lb.Base.CurrentLoad.UpdateValue(uint32(val))
+	log["console"].Debug("Current lb load: %v", lb.Base.CurrentLoad.GetValue())
+
+	//check if lb load isnt to big and if it is already marked as busy before entering scole
+	if !lb.Base.IsLoadStable() {
+		if lb.Base.Status != protocol.Busy {
+			log["console"].Debug("Loadbalancer %v is overloaded, creating new one", lb.Base.ID)
+
+			lb.Base.Status = protocol.Busy
+
+			val := c.lbPortCount.GetValue() + uint32(c.BASE_PORT_LBALANCER)
+			c.lbPortCount.IncValue()
+
+			go func() {
+				lbNew, err := c.createNewLoadBalancer(fmt.Sprintf("%d", val))
+				if err != nil {
+					log["console"].Error("Create loadbalancer: %v", err)
+					return
+				}
+
+				lbNew.Base.NodeID = c.currentNodeID
+
+				if err = c.syncWithAPI(); err != nil {
+					log["console"].Error("Sync with API: %v", err)
+					return
+				}
+			}()
+		}
+	} else {
+		lb.Base.MarkAsHealthy(true)
+	}
+}
+
 func (c *Controller) ReceiveHeartBeat(msg protocol.Message, conn *protocol.Connection) {
-	//log["console"].Debug("Received heart-beat: %v", msg)
 	switch msg.Sender {
 	case "AGENT":
 		//! Same as in lb
 		c.updateAgentHeartbeat(conn.ID)
 	case "LOADBALANCER":
 		if lb, ok := c.LbInfo[conn.ID]; ok {
-			val, err := strconv.ParseUint(msg.Content, 10, 64)
-			if err != nil {
-				log["console"].Error("Unable to parse string to int %v", msg.Content)
-			}
-
-			lb.Base.CurrentLoad.UpdateValue(uint32(val))
-			log["console"].Debug("Current lb load: %v", lb.Base.CurrentLoad.GetValue())
-			if !lb.Base.IsLoadStable() {
-				log["console"].Debug("Loadbalancer %v is overloaded, creating new one", lb.Base.ID)
-
-				cast := uint64(c.lbPortCount)
-				val := utils.IncUint(&cast, utils.SIZE_32)
-				go c.createNewLoadBalancer(fmt.Sprintf("%d", val))
-			}
+			c.updateAndHandleLoadCounter(lb, msg.Content)
 
 			c.updateLBHeartbeat(lb)
 		} else {
@@ -535,18 +556,13 @@ func (c *Controller) recoverStateFromFile() (bool, error) {
 	c.BASE_PORT_LBALANCER = prevState.BASE_PORT_LBALANCER
 	c.HOST_AGENT = prevState.HOST_AGENT
 	c.HOST_LBALANCER = prevState.HOST_LBALANCER
-	c.NextID = prevState.NextID
+	c.NextID.UpdateValue(prevState.NextID.GetValue())
 	c.PORT = prevState.PORT
 	c.Microservices = prevState.Microservices
 
 	//old maps are invalid but nodeInfo is, store old data and make new maps
 	lbInfo := prevState.LbInfo
 	agentInfo := prevState.AgentInfo
-
-	// for _, lb := range lbInfo {
-	// 	log["console"].Debug("lbInfo %v\n", lb)
-	// }
-	// syscall.Exit(1)
 
 	c.LbInfo = make(map[string]*protocol.LBalancerInfo)
 	c.lbConn = make(map[string]*protocol.Connection)
@@ -703,9 +719,9 @@ send:
 func (c *Controller) syncWithAPI() error {
 	var lbs []*protocol.LBalancerInfo
 	for _, lb := range c.LbInfo {
-		if lb.Base.Status == protocol.Healthy {
-			lbs = append(lbs, lb)
-		}
+		//if lb.Base.Status == protocol.Healthy {
+		lbs = append(lbs, lb)
+		//}
 	}
 
 	newData, err := json.ToJSON(lbs)
@@ -750,8 +766,8 @@ func (c *Controller) syncWithAPI() error {
 
 // ################################# AGENT FUNCTIONS ###############################
 func (c *Controller) GetNextNodeID() uint32 {
-	cast := uint64(c.NextID)
-	return uint32(utils.IncUint(&cast, utils.SIZE_32))
+	c.NextID.IncValue()
+	return c.NextID.GetValue()
 }
 
 // createNewAgent spawns an agent process, assigns host:port, and registers it.
@@ -885,7 +901,7 @@ func (c *Controller) updateAgentHeartbeat(agentConnID string) {
 	if agent, ok := c.AgentInfo[agentConnID]; ok {
 		agent.Mu.Lock()
 		agent.Base.LastHeartbeat = time.Now()
-		agent.Base.Status = protocol.Healthy
+		agent.Base.MarkAsHealthy(false)
 		agent.Mu.Unlock()
 		log["console"].Debug("Agent %v heartbeat is %v", agent.Base.ID, agent.Base.LastHeartbeat)
 
@@ -1047,7 +1063,7 @@ func (c *Controller) updateLBHeartbeat(lb *protocol.LBalancerInfo) {
 
 	lb.Mu.Lock()
 	lb.Base.LastHeartbeat = time.Now()
-	lb.Base.Status = protocol.Healthy
+	lb.Base.MarkAsHealthy(false)
 	lb.Mu.Unlock()
 	log["console"].Debug("LoadBalancer %v heartbeat is %v", lb.Base.ID, lb.Base.LastHeartbeat)
 

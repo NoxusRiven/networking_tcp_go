@@ -132,12 +132,8 @@ func (lb *LoadBalancer) registerConnection(nc net.Conn) (*protocol.Connection, b
 
 func (lb *LoadBalancer) handleRequest(request protocol.Message, conn *protocol.Connection) {
 
-	lb.currentLoad.IncLoad()
-	log["console"].Debug("current load increasted: %v", lb.currentLoad.GetValue())
-	defer func() {
-		log["console"].Debug("------- Decrementing counter --------")
-		lb.currentLoad.DecLoad()
-	}()
+	lb.currentLoad.IncValue()
+	defer lb.currentLoad.DecValue()
 
 	var response protocol.Message
 	var respChan <-chan protocol.Message = nil
@@ -303,8 +299,6 @@ func (lb *LoadBalancer) handleRequest(request protocol.Message, conn *protocol.C
 			}
 		}
 	}
-
-	//log["console"].Debug("------ Handle Request ended ------")
 }
 
 func (lb *LoadBalancer) SendHeartBeat(conn *protocol.Connection) {

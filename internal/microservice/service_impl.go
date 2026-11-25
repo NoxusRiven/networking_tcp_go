@@ -42,7 +42,7 @@ func (ping *PingService) HandleRequest(request protocol.Message) {
 
 func (idle *IdleService) HandleRequest(request protocol.Message) {
 	//for now pre defined
-	n := 10
+	n := 20
 
 	//sending work n times
 	for i := 0; i < n; i++ {

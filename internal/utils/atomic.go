@@ -2,6 +2,7 @@ package utils
 
 import (
 	"fmt"
+	"math"
 	"sync/atomic"
 )
 
@@ -17,11 +18,11 @@ func (c *Counter) UpdateValue(new uint32) {
 	c.val.Swap(new)
 }
 
-func (c *Counter) IncLoad() {
+func (c *Counter) IncValue() {
 	c.val.Add(1)
 }
 
-func (c *Counter) DecLoad() error {
+func (c *Counter) DecValue() error {
 
 	for {
 		current := c.GetValue()
@@ -38,54 +39,38 @@ func (c *Counter) DecLoad() error {
 
 }
 
-type IntSize uint16
+type IntSize uint8
 
 const (
-	MaxUint8 = ^uint8(0)
-	MinUint8 = 0
-	MaxInt8  = int(MaxUint8 >> 1)
-	MinInt8  = -MaxInt8 - 1
-
-	MaxUint16 = ^uint16(0)
-	MinUint16 = 0
-	MaxInt16  = int(MaxUint16 >> 1)
-	MinInt16  = -MaxInt16 - 1
-
-	MaxUint32 = ^uint32(0)
-	MinUint32 = 0
-	MaxInt32  = int(MaxUint32 >> 1)
-	MinInt32  = -MaxInt32 - 1
-
-	MaxUint64 = ^uint64(0)
-	MinUint64 = 0
-	MaxInt64  = int(MaxUint64 >> 1)
-	MinInt64  = -MaxInt64 - 1
-)
-
-const (
+	SIZE_8  IntSize = 8
 	SIZE_16 IntSize = 16
 	SIZE_32 IntSize = 32
 	SIZE_64 IntSize = 64
 )
 
-// TODO: fix this counter
-func IncUint(val *uint64, size IntSize) uint64 {
-
-	if size == SIZE_16 {
-		if *val < uint64(MaxUint16) {
-			cast := uint32(*val)
-			return uint64(atomic.AddUint32(&cast, 1))
-		} else {
-			panic(fmt.Sprintf("Trying to increment uint16 when value is equal to: %v ", *val))
-		}
-
-	} else if size == SIZE_32 {
-		cast := uint32(*val)
-		return uint64(atomic.AndUint32(&cast, 1))
-
-	} else if size == SIZE_64 {
-		return atomic.AndUint64(val, 1)
+func ReturnAndIncUint(val *uint64, size IntSize) uint64 {
+	var maxVal uint64
+	switch size {
+	case SIZE_8:
+		maxVal = uint64(math.MaxInt8)
+	case SIZE_16:
+		maxVal = uint64(math.MaxUint16)
+	case SIZE_32:
+		maxVal = uint64(math.MaxUint32)
+	case SIZE_64:
+		maxVal = math.MaxUint64
+	default:
+		panic("ReturnAndIncUint - Unreachable")
 	}
 
-	panic("IncUint - Unreachable ")
+	for {
+		current := atomic.LoadUint64(val)
+		if current >= maxVal {
+			panic(fmt.Sprintf("Trying to increment %v when value is equal to: %v", size, current))
+		}
+		next := current + 1
+		if atomic.CompareAndSwapUint64(val, current, next) {
+			return current
+		}
+	}
 }

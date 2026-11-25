@@ -5,14 +5,6 @@ import (
 	"sync"
 )
 
-type NodeStatus int
-
-const (
-	Healthy NodeStatus = iota
-	Unhealthy
-	Unknown
-)
-
 type ServiceType string
 
 const (
