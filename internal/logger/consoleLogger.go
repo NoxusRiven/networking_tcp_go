@@ -2,6 +2,8 @@ package logger
 
 import (
 	"fmt"
+	"io"
+	"networking/tcp/internal/platform"
 	"os"
 )
 
@@ -24,18 +26,28 @@ func (c *ConsoleLogger) InitConsoleLogger(out *os.File, err *os.File) {
 	c.Err = err
 }
 
+func (c *ConsoleLogger) coloredTerminalMsg(w io.Writer, level string, color platform.Color, fstring string, args ...any) {
+	plainStr := c.Base.formatMessage(level, fmt.Sprintf(fstring, args...))
+	fmt.Fprintln(w, platform.TerminalColoring(color, plainStr))
+}
+
+// for testing specific cases so it will stand out
+func (c *ConsoleLogger) Test(fstring string, args ...any) {
+	c.coloredTerminalMsg(c.Out, "Test", platform.Cyan, fstring, args...)
+}
+
 func (c *ConsoleLogger) Debug(fstring string, args ...any) {
-	fmt.Fprintln(c.Out, c.Base.formatMessage("DEBUG", fmt.Sprintf(fstring, args...)))
+	c.coloredTerminalMsg(c.Out, "DEBUG", platform.WHITE, fstring, args...)
 }
 
 func (c *ConsoleLogger) Info(fstring string, args ...any) {
-	fmt.Fprintln(c.Err, c.Base.formatMessage("INFO", fmt.Sprintf(fstring, args...)))
+	c.coloredTerminalMsg(c.Out, "INFO", platform.DARK_GRAY, fstring, args...)
 }
 
 func (c *ConsoleLogger) Warning(fstring string, args ...any) {
-	fmt.Fprintln(c.Err, c.Base.formatMessage("WARNING", fmt.Sprintf(fstring, args...)))
+	c.coloredTerminalMsg(c.Out, "WARNING", platform.YELLOW, fstring, args...)
 }
 
 func (c *ConsoleLogger) Error(fstring string, args ...any) {
-	fmt.Fprintln(c.Err, c.Base.formatMessage("ERROR", fmt.Sprintf(fstring, args...)))
+	c.coloredTerminalMsg(c.Out, "ERROR", platform.RED, fstring, args...)
 }

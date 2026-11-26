@@ -16,6 +16,10 @@ func NewStringLogger() *StringLogger {
 	}
 }
 
+func (s *StringLogger) Test(fstring string, args ...any) {
+	s.Buffer.WriteString(s.Base.formatMessage("TEST", fmt.Sprintf(fstring, args...)) + "\n")
+}
+
 func (s *StringLogger) Debug(fstring string, args ...any) {
 	s.Buffer.WriteString(s.Base.formatMessage("DEBUG", fmt.Sprintf(fstring, args...)) + "\n")
 }

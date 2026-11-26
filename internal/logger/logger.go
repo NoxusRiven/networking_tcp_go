@@ -29,6 +29,8 @@ const (
 const ()
 
 type Logger interface {
+	Test(fstring string, args ...any)
+
 	Debug(fstring string, args ...any)
 	Info(fstring string, args ...any)
 	Warning(fstring string, args ...any)
