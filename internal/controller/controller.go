@@ -145,7 +145,6 @@ func (c *Controller) run() error {
 
 // starts and accepts api
 func (c *Controller) Start() error {
-
 	recovered, err := c.setup()
 	if err != nil {
 		return err
@@ -256,6 +255,8 @@ func (c *Controller) updateAndHandleLoadCounter(lb *protocol.LBalancerInfo, load
 				}
 
 				lbNew.Base.NodeID = c.currentNodeID
+
+				log["console"].Test("Lbs before api sync %v", len(c.LbInfo))
 
 				if err = c.syncWithAPI(); err != nil {
 					log["console"].Error("Sync with API: %v", err)
@@ -718,11 +719,15 @@ send:
 // this func will be called when loadbalancers and microservices change without api knowing it
 func (c *Controller) syncWithAPI() error {
 	var lbs []*protocol.LBalancerInfo
+
+	log["console"].Test("Lbs in api sync %v", len(c.LbInfo))
 	for _, lb := range c.LbInfo {
 		//if lb.Base.Status == protocol.Healthy {
 		lbs = append(lbs, lb)
 		//}
 	}
+
+	log["console"].Test("Lbs array api sync %v", len(lbs))
 
 	newData, err := json.ToJSON(lbs)
 	if err != nil {
