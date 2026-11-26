@@ -89,6 +89,6 @@ func TerminalColoring(color Color, msg string) string {
 	case "windows":
 		return colorTerminalWindows(color, msg)
 	default:
-		panic("[ERROR][Terminal Coloring] - System not supported for function")
+		return msg
 	}
 }
